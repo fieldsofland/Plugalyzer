@@ -58,6 +58,7 @@ nlohmann::json toJson(const CaseResult& result) {
     j["metrics"] = result.metrics;
     j["thresholds"] = result.thresholds;
     j["artifacts"] = result.artifacts;
+    j["recommendations"] = result.recommendations;
     j["baselineCompared"] = result.baselineCompared;
     j["baselinePassed"] = result.baselinePassed;
 
@@ -85,6 +86,10 @@ CaseResult caseResultFromJson(const nlohmann::json& j) {
 
     if (j.contains("artifacts") && j["artifacts"].is_object()) {
         result.artifacts = j["artifacts"].get<std::map<std::string, std::string>>();
+    }
+
+    if (j.contains("recommendations") && j["recommendations"].is_array()) {
+        result.recommendations = j["recommendations"].get<std::vector<std::string>>();
     }
 
     result.baselineCompared = j.value("baselineCompared", false);

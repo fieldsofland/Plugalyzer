@@ -26,6 +26,17 @@
     { "id": "eq_curve", "type": "eqCurve", "plugin": "dreamrack", "signal": "hf_sweep" },
     { "id": "noise_dc", "type": "noiseDc", "plugin": "dreamrack", "signal": "silence" },
     { "id": "latency", "type": "latency", "plugin": "dreamrack", "signal": "impulse" },
+    {
+      "id": "preset_gain_alignment",
+      "type": "presetGain",
+      "plugin": "dreamrack",
+      "signal": "sine_1k",
+      "includeModuleIsolation": false,
+      "presetDirectory": "/abs/path/to/dreamrack/presets",
+      "presetExtensions": [".vstpreset"],
+      "measurementWarmupSec": 0.5,
+      "measurementDurationSec": 2.0
+    },
     { "id": "roundtrip", "type": "stateRoundtrip", "plugin": "dreamrack", "signal": "sine_1k" },
     { "id": "perf", "type": "perfStress", "plugin": "dreamrack", "signal": "sine_1k" },
     { "id": "validate_pluginval", "type": "validate", "plugin": "dreamrack", "signal": "silence", "runPluginval": true }
@@ -45,7 +56,8 @@
       "zipperArtifactDbMax": -65,
       "minRealtimeFactor": 1.0,
       "maxMemoryDriftMb": 100,
-      "baselineMetricDeltaMax": 0.5
+      "baselineMetricDeltaMax": 0.5,
+      "presetGainSpreadDbMax": 2.0
     }
   },
   "baseline": {

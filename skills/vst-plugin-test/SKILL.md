@@ -46,6 +46,11 @@ Under `<out-dir>/<run-id>/`:
 - `report.html`: human summary
 - `artifacts/<case-id>/`: per-case outputs/logs/repro
 
+Case-level JSON fields to consume:
+
+- `metrics`: numeric measurements and thresholds
+- `recommendations`: remediation guidance for failed/error/crashed cases
+
 ## Quick interpretation rules
 
 - `status=passed`: case met all thresholds (and baseline checks when enabled)
@@ -53,6 +58,16 @@ Under `<out-dir>/<run-id>/`:
 - `status=crashed`: worker crash/timeout
 - `status=error`: infrastructure/runtime/plugin-load failure
 - `status=skipped`: optional checks not run (e.g., optional `pluginval` unavailable)
+
+When `testType=aliasing`, use:
+
+- `metrics.aliasingRatioDb`: worst foldback ratio from high-frequency scan
+- `artifacts.aliasingScan`: per-tone foldback scan details
+
+When `testType=presetGain`, use:
+
+- `metrics.presetGainSpreadDb`: max-min output RMS spread across presets
+- `artifacts.presetGainSummary`: per-preset RMS/peak details
 
 ## Exit codes
 

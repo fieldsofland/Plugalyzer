@@ -71,6 +71,7 @@ struct ThresholdProfile {
     std::optional<double> minRealtimeFactor;
     std::optional<double> maxMemoryDriftMb;
     std::optional<double> baselineMetricDeltaMax;
+    std::optional<double> presetGainSpreadDbMax;
 };
 
 struct TestDefinition {

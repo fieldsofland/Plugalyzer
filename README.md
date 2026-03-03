@@ -92,6 +92,7 @@ vst-test run --suite suites/dreamrack.json --out-dir .vst-test/runs --jobs 4 --j
 - `stateRoundtrip`
 - `perfStress`
 - `validate`
+- `presetGain`
 
 ### Minimal Suite Example
 
@@ -124,7 +125,8 @@ vst-test run --suite suites/dreamrack.json --out-dir .vst-test/runs --jobs 4 --j
       "eqMaxErrorDb": 1.0,
       "eqRmsErrorDb": 0.35,
       "noiseFloorDbfsMax": -90,
-      "latencyErrorSamplesMax": 1
+      "latencyErrorSamplesMax": 1,
+      "presetGainSpreadDbMax": 2.0
     }
   },
   "baseline": {
@@ -137,6 +139,32 @@ vst-test run --suite suites/dreamrack.json --out-dir .vst-test/runs --jobs 4 --j
   }
 }
 ```
+
+### Preset Gain Alignment Example
+
+Use `presetGain` to load a preset set and check output level spread from a sine reference.
+
+```json
+{
+  "id": "preset_gain_alignment",
+  "type": "presetGain",
+  "plugin": "myplugin",
+  "signal": "hf_sweep",
+  "presetDirectory": "/abs/path/presets",
+  "presetExtensions": [".vstpreset", ".fxp"],
+  "presetFrequencyHz": 1000.0,
+  "presetLevelDbfs": -18.0,
+  "presetDurationSec": 3.0,
+  "measurementWarmupSec": 0.5,
+  "measurementDurationSec": 2.0
+}
+```
+
+Artifact:
+
+- `artifacts/<case-id>/preset_gain_summary.json`
+
+If the selected test signal is not `sine`, `presetGain` will synthesize a sine internally using `presetFrequencyHz`/`presetLevelDbfs`/`presetDurationSec`.
 
 ## Chain Adapter Example
 
@@ -206,6 +234,10 @@ vst-test validate \
 - `5` missing required dependency (e.g. required `pluginval`)
 - `6` unsupported platform/format request
 
+## Agent-Friendly Guidance
+
+`results.json` now includes `recommendations` per case. For failures/errors/crashes, this gives machine-readable remediation steps for agents and CI annotations.
+
 ## CI
 
 A GitHub Actions workflow is included in `.github/workflows/ci.yml`.
@@ -213,4 +245,3 @@ A GitHub Actions workflow is included in `.github/workflows/ci.yml`.
 ## License
 
 This fork remains GPL-3.0 compatible with upstream dependencies and origin.
-

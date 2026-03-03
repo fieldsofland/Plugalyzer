@@ -18,6 +18,17 @@ juce::File currentBaselineFile(const juce::File& repoRoot, const std::string& su
         .getChildFile("results.json");
 }
 
+void addRecommendation(CaseResult& caseResult, const std::string& recommendation) {
+    if (recommendation.empty()) {
+        return;
+    }
+
+    if (std::find(caseResult.recommendations.begin(), caseResult.recommendations.end(),
+                  recommendation) == caseResult.recommendations.end()) {
+        caseResult.recommendations.push_back(recommendation);
+    }
+}
+
 } // namespace
 
 std::optional<RunResult> BaselineManager::loadCurrentBaseline(const std::string& suiteName,
@@ -44,6 +55,8 @@ void BaselineManager::compareAgainstBaseline(CaseResult& caseResult,
                 caseResult.message += " | ";
             }
             caseResult.message += "missing baseline in strict mode";
+            addRecommendation(caseResult,
+                              "Approve a new baseline with `vst-test baseline approve` for this suite and environment.");
         }
 
         return;
@@ -64,6 +77,8 @@ void BaselineManager::compareAgainstBaseline(CaseResult& caseResult,
                 caseResult.message += " | ";
             }
             caseResult.message += "missing baseline case in strict mode";
+            addRecommendation(caseResult,
+                              "Regenerate and approve baseline artifacts so this case id exists in the baseline set.");
         }
         return;
     }
@@ -84,6 +99,8 @@ void BaselineManager::compareAgainstBaseline(CaseResult& caseResult,
             }
             caseResult.message += "baseline drift in " + metricName + ": " +
                                   std::to_string(delta);
+            addRecommendation(caseResult,
+                              "Inspect metric drift artifacts and either fix the DSP regression or approve an intentional change as a new baseline.");
         }
     }
 

@@ -10,7 +10,10 @@
 #include <algorithm>
 #include <cmath>
 #include <fstream>
+#include <limits>
 #include <numeric>
+#include <sstream>
+#include <set>
 #include <stdexcept>
 
 namespace vstest {
@@ -65,6 +68,32 @@ double computeDcOffset(const juce::AudioBuffer<float>& buffer) {
     }
 
     return static_cast<double>(sum / count);
+}
+
+double computeRmsRange(const juce::AudioBuffer<float>& buffer, int startSample, int sampleCount) {
+    if (buffer.getNumChannels() == 0 || buffer.getNumSamples() == 0 || sampleCount <= 0) {
+        return 0.0;
+    }
+
+    const int start = std::clamp(startSample, 0, buffer.getNumSamples());
+    const int end = std::clamp(start + sampleCount, start, buffer.getNumSamples());
+    const int countPerChannel = end - start;
+    if (countPerChannel <= 0) {
+        return 0.0;
+    }
+
+    long double sumSquares = 0.0;
+    const auto count = static_cast<long double>(buffer.getNumChannels() * countPerChannel);
+
+    for (int ch = 0; ch < buffer.getNumChannels(); ++ch) {
+        const auto* read = buffer.getReadPointer(ch);
+        for (int i = start; i < end; ++i) {
+            const auto sample = static_cast<long double>(read[i]);
+            sumSquares += sample * sample;
+        }
+    }
+
+    return std::sqrt(static_cast<double>(sumSquares / count));
 }
 
 double residualRmsDbfs(const juce::AudioBuffer<float>& a, const juce::AudioBuffer<float>& b) {
@@ -150,38 +179,6 @@ int dominantBin(const Spectrum& spectrum) {
     return bin;
 }
 
-double aliasingRatioDb(const Spectrum& spectrum) {
-    const int fundamental = dominantBin(spectrum);
-    const int bins = static_cast<int>(spectrum.magnitudes.size());
-
-    auto energyAt = [&](int bin) {
-        if (bin < 0 || bin >= bins) {
-            return 0.0;
-        }
-        const auto m = spectrum.magnitudes[bin];
-        return m * m;
-    };
-
-    double desiredEnergy = 0.0;
-    for (int harmonic = 1; harmonic <= 8; ++harmonic) {
-        const int center = fundamental * harmonic;
-        if (center >= bins) {
-            break;
-        }
-
-        desiredEnergy += energyAt(center - 1) + energyAt(center) + energyAt(center + 1);
-    }
-
-    double totalEnergy = 0.0;
-    for (int bin = 1; bin < bins; ++bin) {
-        const auto m = spectrum.magnitudes[bin];
-        totalEnergy += m * m;
-    }
-
-    const double residualEnergy = std::max(0.0, totalEnergy - desiredEnergy);
-    return 10.0 * std::log10((residualEnergy + 1e-30) / (desiredEnergy + 1e-30));
-}
-
 int estimateLatencySamples(const juce::AudioBuffer<float>& input, const juce::AudioBuffer<float>& output,
                            int maxLag) {
     if (input.getNumSamples() == 0 || output.getNumSamples() == 0) {
@@ -242,6 +239,61 @@ void addThreshold(std::map<std::string, double>& thresholds, const char* key,
     }
 }
 
+void addRecommendation(CaseResult& result, const std::string& recommendation) {
+    if (recommendation.empty()) {
+        return;
+    }
+
+    if (std::find(result.recommendations.begin(), result.recommendations.end(), recommendation) ==
+        result.recommendations.end()) {
+        result.recommendations.push_back(recommendation);
+    }
+}
+
+std::string recommendationForMetric(const std::string& metric) {
+    if (metric == "aliasingRatioDb") {
+        return "Reduce foldback by moving nonlinear stages to higher oversampling and adding steeper post-nonlinearity low-pass filtering.";
+    }
+    if (metric == "eqMaxErrorDb" || metric == "eqRmsErrorDb") {
+        return "Check EQ coefficient design, sample-rate compensation, and gain/Q mapping against expected transfer curves.";
+    }
+    if (metric == "noiseFloorDbfs") {
+        return "Lower idle noise by checking denormal handling, noise injection paths, and silence-state reset behavior.";
+    }
+    if (metric == "latencyErrorSamples") {
+        return "Align internal delay compensation and report accurate latency via getLatencySamples().";
+    }
+    if (metric == "determinismResidualDbfs") {
+        return "Remove nondeterministic state updates (unseeded random, time-dependent modulation) or reset state before render.";
+    }
+    if (metric == "thdnDb") {
+        return "Reduce distortion products via lower nonlinear drive, improved oversampling, and stronger anti-alias filtering.";
+    }
+    if (metric == "imdDb") {
+        return "Tune nonlinear stages for intermod reduction and validate gain staging under two-tone inputs.";
+    }
+    if (metric == "phaseDeviationDeg") {
+        return "Re-check filter topology and phase response targets; avoid accidental extra phase-wrapping or delay ripple.";
+    }
+    if (metric == "bypassClickPeakDbfs") {
+        return "Implement short crossfades or zero-crossing-aware switching when toggling bypass/module states.";
+    }
+    if (metric == "zipperArtifactDb") {
+        return "Smooth parameter automation with slews/ramps and avoid step discontinuities inside processBlock.";
+    }
+    if (metric == "realtimeFactor") {
+        return "Improve throughput by reducing per-block allocations, denormal costs, and expensive oversampling/filter paths.";
+    }
+    if (metric == "memoryDriftMb") {
+        return "Investigate repeated allocations and lifetime leaks across render loops and plugin instances.";
+    }
+    if (metric == "presetGainSpreadDb") {
+        return "Align preset output trims/makeup gain to a loudness target so preset switching stays level-matched.";
+    }
+
+    return "";
+}
+
 void checkUpperBound(CaseResult& result, const std::string& metric, const std::string& thresholdName) {
     if (!result.metrics.contains(metric) || !result.thresholds.contains(thresholdName)) {
         return;
@@ -253,6 +305,7 @@ void checkUpperBound(CaseResult& result, const std::string& metric, const std::s
             result.message += " | ";
         }
         result.message += metric + " exceeded threshold";
+        addRecommendation(result, recommendationForMetric(metric));
     }
 }
 
@@ -267,6 +320,7 @@ void checkLowerBound(CaseResult& result, const std::string& metric, const std::s
             result.message += " | ";
         }
         result.message += metric + " below threshold";
+        addRecommendation(result, recommendationForMetric(metric));
     }
 }
 
@@ -283,8 +337,341 @@ void applyThresholdChecks(CaseResult& result) {
     checkUpperBound(result, "bypassClickPeakDbfs", "bypassClickPeakDbfsMax");
     checkUpperBound(result, "zipperArtifactDb", "zipperArtifactDbMax");
     checkUpperBound(result, "memoryDriftMb", "maxMemoryDriftMb");
+    checkUpperBound(result, "presetGainSpreadDb", "presetGainSpreadDbMax");
 
     checkLowerBound(result, "realtimeFactor", "minRealtimeFactor");
+}
+
+std::set<std::string> parsePresetExtensions(const nlohmann::json& extra) {
+    std::set<std::string> extensions;
+    if (extra.contains("presetExtensions") && extra["presetExtensions"].is_array()) {
+        for (const auto& item : extra["presetExtensions"]) {
+            if (!item.is_string()) {
+                continue;
+            }
+
+            auto ext = juce::String(item.get<std::string>()).trim().toLowerCase().toStdString();
+            if (ext.empty()) {
+                continue;
+            }
+
+            if (ext.front() != '.') {
+                ext.insert(ext.begin(), '.');
+            }
+
+            extensions.insert(ext);
+        }
+    }
+
+    if (extensions.empty()) {
+        extensions.insert(".vstpreset");
+        extensions.insert(".aupreset");
+        extensions.insert(".fxp");
+        extensions.insert(".fxb");
+    }
+
+    return extensions;
+}
+
+std::vector<juce::File> collectPresetFiles(const nlohmann::json& extra) {
+    std::vector<juce::File> files;
+
+    if (extra.contains("presetFiles") && extra["presetFiles"].is_array()) {
+        for (const auto& item : extra["presetFiles"]) {
+            if (!item.is_string()) {
+                continue;
+            }
+
+            juce::File preset(item.get<std::string>());
+            if (!preset.existsAsFile()) {
+                throw std::runtime_error("Preset file not found: " + preset.getFullPathName().toStdString());
+            }
+            files.push_back(preset);
+        }
+    }
+
+    if (extra.contains("presetDirectory") && extra["presetDirectory"].is_string()) {
+        juce::File presetDirectory(extra["presetDirectory"].get<std::string>());
+        if (!presetDirectory.isDirectory()) {
+            throw std::runtime_error("Preset directory not found: " +
+                                     presetDirectory.getFullPathName().toStdString());
+        }
+
+        const auto recursive = extra.value("presetRecursive", true);
+        const auto extensions = parsePresetExtensions(extra);
+        for (const auto& entry :
+             juce::RangedDirectoryIterator(presetDirectory, recursive, "*", juce::File::findFiles)) {
+            auto ext = entry.getFile().getFileExtension().toLowerCase().toStdString();
+            if (extensions.contains(ext)) {
+                files.push_back(entry.getFile());
+            }
+        }
+    }
+
+    std::sort(files.begin(), files.end(), [](const juce::File& a, const juce::File& b) {
+        return a.getFullPathName().toStdString() < b.getFullPathName().toStdString();
+    });
+    files.erase(std::unique(files.begin(), files.end(), [](const juce::File& a, const juce::File& b) {
+                    return a.getFullPathName() == b.getFullPathName();
+                }),
+                files.end());
+
+    if (files.empty()) {
+        throw std::runtime_error(
+            "presetGain requires presetFiles[] or presetDirectory with at least one preset");
+    }
+
+    return files;
+}
+
+double energyAroundBin(const Spectrum& spectrum, int centerBin, int halfWidth) {
+    const int start = std::max(0, centerBin - halfWidth);
+    const int end = std::min(static_cast<int>(spectrum.magnitudes.size()) - 1, centerBin + halfWidth);
+    double energy = 0.0;
+    for (int bin = start; bin <= end; ++bin) {
+        const auto magnitude = spectrum.magnitudes[bin];
+        energy += magnitude * magnitude;
+    }
+    return energy;
+}
+
+int hzToBin(const Spectrum& spectrum, int sampleRate, double hz) {
+    const double binHz = static_cast<double>(sampleRate) / static_cast<double>(spectrum.fftSize);
+    return std::clamp(static_cast<int>(std::round(hz / std::max(1.0, binHz))), 1,
+                      static_cast<int>(spectrum.magnitudes.size()) - 1);
+}
+
+double foldToNyquist(double hz, int sampleRate) {
+    const double fs = static_cast<double>(sampleRate);
+    const double nyquist = fs * 0.5;
+    double folded = std::fmod(std::abs(hz), fs);
+    if (folded > nyquist) {
+        folded = fs - folded;
+    }
+    return folded;
+}
+
+struct FoldbackToneMeasurement {
+    double toneHz = 0.0;
+    double aliasRatioDb = 0.0;
+    double foldbackEnergyDb = 0.0;
+    int foldbackCount = 0;
+};
+
+FoldbackToneMeasurement analyzeFoldbackTone(const Spectrum& spectrum, int sampleRate, double toneHz,
+                                            int harmonicMax, int binHalfWidth) {
+    const int fundamentalBin = hzToBin(spectrum, sampleRate, toneHz);
+    const double fundamentalEnergy = energyAroundBin(spectrum, fundamentalBin, std::max(1, binHalfWidth));
+
+    double foldbackEnergy = 0.0;
+    int foldbackCount = 0;
+    for (int harmonic = 2; harmonic <= harmonicMax; ++harmonic) {
+        const double foldedHz = foldToNyquist(toneHz * static_cast<double>(harmonic), sampleRate);
+        const int aliasBin = hzToBin(spectrum, sampleRate, foldedHz);
+        if (std::abs(aliasBin - fundamentalBin) <= (binHalfWidth + 1)) {
+            continue;
+        }
+
+        foldbackEnergy += energyAroundBin(spectrum, aliasBin, binHalfWidth);
+        ++foldbackCount;
+    }
+
+    FoldbackToneMeasurement measurement;
+    measurement.toneHz = toneHz;
+    measurement.aliasRatioDb =
+        10.0 * std::log10((foldbackEnergy + 1.0e-30) / (fundamentalEnergy + 1.0e-30));
+    measurement.foldbackEnergyDb = 10.0 * std::log10(foldbackEnergy + 1.0e-30);
+    measurement.foldbackCount = foldbackCount;
+    return measurement;
+}
+
+void runAliasingFoldbackScan(const CaseSpec& caseSpec, const RenderRequest& baseRequest,
+                             CaseResult& result, unsigned int seed) {
+    const int toneCount = std::clamp(caseSpec.extra.value("aliasToneCount", 8), 1, 32);
+    const int harmonicMax = std::clamp(caseSpec.extra.value("aliasHarmonicsMax", 12), 2, 64);
+    const int binHalfWidth = std::clamp(caseSpec.extra.value("aliasBinHalfWidth", 1), 0, 8);
+    const double startRatio = std::clamp(caseSpec.extra.value("aliasStartNyquistRatio", 0.55), 0.05, 0.99);
+    const double endRatio = std::clamp(caseSpec.extra.value("aliasEndNyquistRatio", 0.95), 0.06, 0.995);
+    if (endRatio <= startRatio) {
+        throw std::runtime_error("aliasEndNyquistRatio must be greater than aliasStartNyquistRatio");
+    }
+
+    const auto artifactDir = juce::File(caseSpec.artifactsDir);
+    nlohmann::json details;
+    details["method"] = "high_freq_foldback_scan_v1";
+    details["sampleRate"] = caseSpec.sampleRate;
+    details["toneCount"] = toneCount;
+    details["toneRangeNyquistRatio"] = {startRatio, endRatio};
+    details["harmonicsAnalyzed"] = harmonicMax;
+
+    double worstRatioDb = -std::numeric_limits<double>::infinity();
+    double sumRatioDb = 0.0;
+    double worstToneHz = 0.0;
+    int foldbackCount = 0;
+
+    nlohmann::json tones = nlohmann::json::array();
+    for (int index = 0; index < toneCount; ++index) {
+        const double nyquist = static_cast<double>(caseSpec.sampleRate) * 0.5;
+        const double t = (toneCount == 1) ? 1.0 : static_cast<double>(index) / (toneCount - 1);
+        const double toneHz = std::clamp((startRatio + (endRatio - startRatio) * t) * nyquist, 20.0,
+                                         nyquist * 0.995);
+
+        SignalDefinition toneSignal = caseSpec.signal;
+        toneSignal.type = "sine";
+        toneSignal.frequencyHz = toneHz;
+        toneSignal.durationSec = std::max(1.0, caseSpec.signal.durationSec);
+
+        auto toneRequest = baseRequest;
+        toneRequest.input =
+            SignalGenerator::generate(toneSignal, caseSpec.sampleRate, caseSpec.channels,
+                                      seed + static_cast<unsigned int>(index + 1) * 911u);
+
+        const auto toneRender = RenderEngine::render(toneRequest);
+        const auto spectrum = computeSpectrum(toneRender.output, 0);
+        const auto measurement =
+            analyzeFoldbackTone(spectrum, caseSpec.sampleRate, toneHz, harmonicMax, binHalfWidth);
+
+        if (measurement.aliasRatioDb > worstRatioDb) {
+            worstRatioDb = measurement.aliasRatioDb;
+            worstToneHz = toneHz;
+        }
+        sumRatioDb += measurement.aliasRatioDb;
+        foldbackCount += measurement.foldbackCount;
+
+        nlohmann::json toneJson;
+        toneJson["toneHz"] = measurement.toneHz;
+        toneJson["aliasRatioDb"] = measurement.aliasRatioDb;
+        toneJson["foldbackEnergyDb"] = measurement.foldbackEnergyDb;
+        toneJson["foldbackCount"] = measurement.foldbackCount;
+        tones.push_back(toneJson);
+    }
+
+    result.metrics["aliasingRatioDb"] = worstRatioDb;
+    result.metrics["aliasingMeanRatioDb"] = sumRatioDb / static_cast<double>(toneCount);
+    result.metrics["aliasingWorstToneHz"] = worstToneHz;
+    result.metrics["aliasingFoldbackCount"] = static_cast<double>(foldbackCount);
+    result.metrics["aliasingScannedToneCount"] = static_cast<double>(toneCount);
+
+    details["tones"] = tones;
+    const auto detailPath = artifactDir.getChildFile("aliasing_scan.json");
+    detailPath.replaceWithText(details.dump(2));
+    result.artifacts["aliasingScan"] = detailPath.getFullPathName().toStdString();
+}
+
+std::string sanitizeFileStem(const juce::String& value) {
+    std::string out;
+    out.reserve(static_cast<size_t>(value.length()));
+    for (auto c : value.toStdString()) {
+        const bool safe = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                          (c >= '0' && c <= '9') || c == '-' || c == '_';
+        out.push_back(safe ? c : '_');
+    }
+
+    if (out.empty()) {
+        out = "preset";
+    }
+    return out;
+}
+
+void runPresetGainSpread(const CaseSpec& caseSpec, const RenderRequest& baseRequest, CaseResult& result,
+                         unsigned int seed) {
+    auto presetFiles = collectPresetFiles(caseSpec.extra);
+    const bool keepCaseParameterSets = caseSpec.extra.value("presetApplyParameterSets", false);
+    const bool writePerPresetAudio = caseSpec.extra.value("writePresetAudio", false);
+
+    const double warmupSec = std::max(0.0, caseSpec.extra.value("measurementWarmupSec", 0.5));
+    const double measurementDurationSec = std::max(0.0, caseSpec.extra.value("measurementDurationSec", 0.0));
+
+    const auto artifactDir = juce::File(caseSpec.artifactsDir);
+    nlohmann::json detail;
+    detail["method"] = "preset_output_rms_spread_v1";
+    detail["sampleRate"] = caseSpec.sampleRate;
+    detail["blockSize"] = caseSpec.blockSize;
+    detail["channels"] = caseSpec.channels;
+    detail["warmupSec"] = warmupSec;
+    detail["measurementDurationSec"] = measurementDurationSec;
+
+    double minDb = std::numeric_limits<double>::infinity();
+    double maxDb = -std::numeric_limits<double>::infinity();
+    double sumDb = 0.0;
+    std::string minPreset;
+    std::string maxPreset;
+
+    nlohmann::json presets = nlohmann::json::array();
+    for (size_t index = 0; index < presetFiles.size(); ++index) {
+        auto presetRequest = baseRequest;
+        presetRequest.presetPath = presetFiles[index].getFullPathName().toStdString();
+        if (!keepCaseParameterSets) {
+            presetRequest.parameterSets.clear();
+        }
+
+        if (caseSpec.signal.type != "sine") {
+            SignalDefinition sineSignal = caseSpec.signal;
+            sineSignal.type = "sine";
+            sineSignal.frequencyHz = caseSpec.extra.value("presetFrequencyHz", 1000.0);
+            sineSignal.durationSec = caseSpec.extra.value("presetDurationSec", std::max(3.0, caseSpec.signal.durationSec));
+            sineSignal.levelDbfs = caseSpec.extra.value("presetLevelDbfs", caseSpec.signal.levelDbfs);
+            presetRequest.input =
+                SignalGenerator::generate(sineSignal, caseSpec.sampleRate, caseSpec.channels,
+                                          seed + static_cast<unsigned int>(index + 1) * 131u);
+        }
+
+        const auto rendered = RenderEngine::render(presetRequest);
+        const int startSample = static_cast<int>(std::round(warmupSec * caseSpec.sampleRate));
+        const int remainingSamples = std::max(1, rendered.output.getNumSamples() - startSample);
+        int measurementSamples = remainingSamples;
+        if (measurementDurationSec > 0.0) {
+            measurementSamples = std::clamp(
+                static_cast<int>(std::round(measurementDurationSec * caseSpec.sampleRate)), 1,
+                remainingSamples);
+        }
+
+        const double rmsDbfs = linearToDb(computeRmsRange(rendered.output, startSample, measurementSamples));
+        const double peakDbfs = linearToDb(computePeak(rendered.output));
+
+        if (rmsDbfs < minDb) {
+            minDb = rmsDbfs;
+            minPreset = presetFiles[index].getFileName().toStdString();
+        }
+        if (rmsDbfs > maxDb) {
+            maxDb = rmsDbfs;
+            maxPreset = presetFiles[index].getFileName().toStdString();
+        }
+        sumDb += rmsDbfs;
+
+        nlohmann::json presetJson;
+        presetJson["preset"] = presetFiles[index].getFileName().toStdString();
+        presetJson["path"] = presetFiles[index].getFullPathName().toStdString();
+        presetJson["rmsDbfs"] = rmsDbfs;
+        presetJson["peakDbfs"] = peakDbfs;
+        presetJson["realtimeFactor"] = rendered.realtimeFactor;
+        presets.push_back(presetJson);
+
+        if (writePerPresetAudio) {
+            const auto presetOutput = artifactDir.getChildFile("presets")
+                                        .getChildFile(std::to_string(index + 1) + "_" +
+                                                      sanitizeFileStem(presetFiles[index].getFileNameWithoutExtension()) +
+                                                      ".wav");
+            presetOutput.getParentDirectory().createDirectory();
+            writeWav(rendered.output, rendered.sampleRate, presetOutput);
+        }
+    }
+
+    const double spreadDb = maxDb - minDb;
+    result.metrics["presetCount"] = static_cast<double>(presetFiles.size());
+    result.metrics["presetGainSpreadDb"] = spreadDb;
+    result.metrics["presetGainMinDbfs"] = minDb;
+    result.metrics["presetGainMaxDbfs"] = maxDb;
+    result.metrics["presetGainMeanDbfs"] = sumDb / static_cast<double>(presetFiles.size());
+
+    detail["spreadDb"] = spreadDb;
+    detail["quietestPreset"] = minPreset;
+    detail["loudestPreset"] = maxPreset;
+    detail["presets"] = presets;
+
+    const auto detailPath = artifactDir.getChildFile("preset_gain_summary.json");
+    detailPath.replaceWithText(detail.dump(2));
+    result.artifacts["presetGainSummary"] = detailPath.getFullPathName().toStdString();
 }
 
 bool runPluginval(const std::optional<std::string>& pluginvalPath, const CaseSpec& caseSpec,
@@ -351,6 +738,7 @@ CaseResult buildBaseResult(const CaseSpec& caseSpec) {
     addThreshold(result.thresholds, "zipperArtifactDbMax", caseSpec.thresholds.zipperArtifactDbMax);
     addThreshold(result.thresholds, "minRealtimeFactor", caseSpec.thresholds.minRealtimeFactor);
     addThreshold(result.thresholds, "maxMemoryDriftMb", caseSpec.thresholds.maxMemoryDriftMb);
+    addThreshold(result.thresholds, "presetGainSpreadDbMax", caseSpec.thresholds.presetGainSpreadDbMax);
 
     return result;
 }
@@ -386,6 +774,26 @@ void writeReproScript(const CaseSpec& caseSpec, const CaseResult& result) {
     result.artifacts.size();
 }
 
+void ensureFailureRecommendations(CaseResult& result) {
+    if (result.status == "passed" || result.status == "skipped") {
+        return;
+    }
+
+    if (result.status == "crashed") {
+        addRecommendation(
+            result,
+            "Use artifacts/repro.sh and worker.log to isolate the crash path, then add input/state guards around the failing processing stage.");
+    } else if (result.status == "error") {
+        addRecommendation(
+            result,
+            "Fix the runtime/setup error first (plugin path, preset loading, parameter mapping, or file permissions), then rerun the same case id.");
+    }
+
+    addRecommendation(
+        result,
+        "Re-run the failing case with `vst-test run --suite <suite.json> --select <case-id>` and inspect its artifact bundle for root cause.");
+}
+
 } // namespace
 
 CaseResult AnalyzerEngine::runCase(const CaseSpec& caseSpec,
@@ -399,6 +807,7 @@ CaseResult AnalyzerEngine::runCase(const CaseSpec& caseSpec,
         if (caseSpec.runPluginval) {
             runPluginval(pluginvalPath, caseSpec, result);
             if (result.status != "passed") {
+                ensureFailureRecommendations(result);
                 return result;
             }
         }
@@ -426,8 +835,7 @@ CaseResult AnalyzerEngine::runCase(const CaseSpec& caseSpec,
             result.metrics["determinismResidualDbfs"] = residualRmsDbfs(render.output, render2.output);
 
         } else if (caseSpec.testType == "aliasing") {
-            auto spectrum = computeSpectrum(render.output, 0);
-            result.metrics["aliasingRatioDb"] = aliasingRatioDb(spectrum);
+            runAliasingFoldbackScan(caseSpec, request, result, seed);
 
         } else if (caseSpec.testType == "eqCurve") {
             auto inputSpectrum = computeSpectrum(request.input, 0);
@@ -642,16 +1050,21 @@ CaseResult AnalyzerEngine::runCase(const CaseSpec& caseSpec,
             result.metrics["stateSizeBytes"] = static_cast<double>(state.getSize());
             result.metrics["validationPass"] = 1.0;
 
+        } else if (caseSpec.testType == "presetGain") {
+            runPresetGainSpread(caseSpec, request, result, seed);
+
         } else {
             result.status = "failed";
             result.message = "Unsupported test type: " + caseSpec.testType;
         }
 
         applyThresholdChecks(result);
+        ensureFailureRecommendations(result);
 
     } catch (const std::exception& e) {
         result.status = "error";
         result.message = e.what();
+        ensureFailureRecommendations(result);
     }
 
     return result;

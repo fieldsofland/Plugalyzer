@@ -57,6 +57,7 @@ ThresholdProfile parseThresholdProfile(const nlohmann::json& j) {
     setOptional("minRealtimeFactor", p.minRealtimeFactor);
     setOptional("maxMemoryDriftMb", p.maxMemoryDriftMb);
     setOptional("baselineMetricDeltaMax", p.baselineMetricDeltaMax);
+    setOptional("presetGainSpreadDbMax", p.presetGainSpreadDbMax);
 
     return p;
 }
@@ -117,8 +118,38 @@ nlohmann::json thresholdToJson(const ThresholdProfile& p) {
     setOptional("minRealtimeFactor", p.minRealtimeFactor);
     setOptional("maxMemoryDriftMb", p.maxMemoryDriftMb);
     setOptional("baselineMetricDeltaMax", p.baselineMetricDeltaMax);
+    setOptional("presetGainSpreadDbMax", p.presetGainSpreadDbMax);
 
     return j;
+}
+
+void resolveExtraPaths(const juce::File& suiteDir, nlohmann::json& extra) {
+    if (extra.contains("presetDirectory") && extra["presetDirectory"].is_string()) {
+        const auto rawPresetDir = juce::String(extra["presetDirectory"].get<std::string>());
+        if (!juce::File::isAbsolutePath(rawPresetDir)) {
+            extra["presetDirectory"] =
+                suiteDir.getChildFile(rawPresetDir).getFullPathName().toStdString();
+        }
+    }
+
+    if (extra.contains("presetFiles") && extra["presetFiles"].is_array()) {
+        nlohmann::json resolved = nlohmann::json::array();
+        for (const auto& fileJson : extra["presetFiles"]) {
+            if (!fileJson.is_string()) {
+                resolved.push_back(fileJson);
+                continue;
+            }
+
+            const auto rawPresetFile = juce::String(fileJson.get<std::string>());
+            if (juce::File::isAbsolutePath(rawPresetFile)) {
+                resolved.push_back(juce::File(rawPresetFile).getFullPathName().toStdString());
+            } else {
+                resolved.push_back(
+                    suiteDir.getChildFile(rawPresetFile).getFullPathName().toStdString());
+            }
+        }
+        extra["presetFiles"] = resolved;
+    }
 }
 
 SignalDefinition signalFromJson(const nlohmann::json& j) {
@@ -465,6 +496,7 @@ std::vector<CaseSpec> expandCases(const SuiteConfig& suite, const std::string& s
                             caseSpec.runPluginval =
                                 test.extra.value("runPluginval", test.type == "validate");
                             caseSpec.extra = test.extra;
+                            resolveExtraPaths(suiteDir, caseSpec.extra);
 
                             if (pluginIt->second.defaultPreset) {
                                 const auto presetPath =

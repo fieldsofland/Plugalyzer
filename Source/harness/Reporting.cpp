@@ -22,8 +22,11 @@ void Reporter::writeJunit(const RunResult& result, const juce::File& outputFile)
     for (const auto& c : result.cases) {
         xml << "    <testcase classname=\"" << c.testType << "\" name=\"" << c.id << "\">\n";
         if (c.status == "failed" || c.status == "error" || c.status == "crashed") {
-            xml << "      <failure message=\"" << juce::String(c.message).replace("\"", "'")
-                << "\"/>\n";
+            juce::String failureMessage = c.message;
+            if (!c.recommendations.empty()) {
+                failureMessage += " | fix: " + juce::String(c.recommendations.front());
+            }
+            xml << "      <failure message=\"" << failureMessage.replace("\"", "'") << "\"/>\n";
         } else if (c.status == "skipped") {
             xml << "      <skipped message=\"" << juce::String(c.message).replace("\"", "'")
                 << "\"/>\n";
@@ -55,7 +58,7 @@ void Reporter::writeHtml(const RunResult& result, const juce::File& outputFile) 
          << ", failed=" << result.summary.failed << ", crashed=" << result.summary.crashed
          << ", skipped=" << result.summary.skipped << "</p>";
 
-    html << "<table><thead><tr><th>ID</th><th>Type</th><th>Status</th><th>Message</th><th>Metrics</th></tr></thead><tbody>";
+    html << "<table><thead><tr><th>ID</th><th>Type</th><th>Status</th><th>Message</th><th>Metrics</th><th>Recommendations</th></tr></thead><tbody>";
 
     for (const auto& c : result.cases) {
         std::ostringstream metrics;
@@ -68,9 +71,19 @@ void Reporter::writeHtml(const RunResult& result, const juce::File& outputFile) 
             metrics << k << "=" << v;
         }
 
+        std::ostringstream recommendations;
+        first = true;
+        for (const auto& rec : c.recommendations) {
+            if (!first) {
+                recommendations << "; ";
+            }
+            first = false;
+            recommendations << rec;
+        }
+
         html << "<tr><td>" << c.id << "</td><td>" << c.testType << "</td><td class='" << c.status
              << "'>" << c.status << "</td><td>" << c.message << "</td><td>" << metrics.str()
-             << "</td></tr>";
+             << "</td><td>" << recommendations.str() << "</td></tr>";
     }
 
     html << "</tbody></table></body></html>";

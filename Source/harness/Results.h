@@ -31,6 +31,7 @@ struct CaseResult {
     std::map<std::string, double> metrics;
     std::map<std::string, double> thresholds;
     std::map<std::string, std::string> artifacts;
+    std::vector<std::string> recommendations;
     bool baselineCompared = false;
     bool baselinePassed = true;
 };
