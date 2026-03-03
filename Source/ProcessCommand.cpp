@@ -2,6 +2,7 @@
 
 #include "PresetLoadingExtensionsVisitor.h"
 #include "Utils.h"
+#include <nlohmann/json.hpp>
 
 struct ParameterCLIArgument {
     std::string parameterName;
@@ -109,7 +110,7 @@ const static BitDepthValidator BitDepth;
 std::shared_ptr<CLI::App> ProcessCommand::createApp() {
     // don't break these lines, please
     // clang-format off
-    std::shared_ptr<CLI::App> app = std::make_shared<CLI::App>("Processes audio using a plugin", "process");
+    std::shared_ptr<CLI::App> app = std::make_shared<CLI::App>("Processes audio using a plugin", "render");
 
     app->add_option("-p,--plugin", pluginPath, "Plugin path")->required()->check(CLI::ExistingPath); // not ExistingFile because on macOS, these bundles are directores
 
@@ -134,6 +135,8 @@ std::shared_ptr<CLI::App> ProcessCommand::createApp() {
 
     app->add_option("--paramFile", paramsFileOpt, "Path to JSON file to read plugin parameters and automation data from")->check(CLI::ExistingFile);
     app->add_option("--param", params, "Plugin parameters to set. Explicitly specified parameters take precedence over parameters read from file")->check(Validator::PluginParameter);
+    app->add_option("--seed", seed, "Deterministic seed (reserved for stochastic generators; currently informational)");
+    app->add_flag("--json", jsonOutput, "Print machine-readable JSON output");
 
     return app;
     // clang-format on
@@ -272,6 +275,21 @@ void ProcessCommand::execute() {
         }
 
         sampleIndex += blockSize;
+    }
+
+    if (jsonOutput) {
+        nlohmann::json out;
+        out["plugin"] = pluginPath.toStdString();
+        out["output"] = outputFilePath.getFullPathName().toStdString();
+        out["sampleRate"] = sampleRate;
+        out["blockSize"] = blockSize;
+        out["channelsOut"] = totalNumOutputChannels;
+        out["bitDepth"] = bitDepth;
+        out["inputSamples"] = totalInputLength;
+        out["latencySamples"] = latency;
+        out["seed"] = seed;
+        out["status"] = "passed";
+        std::cout << out.dump(2) << std::endl;
     }
 }
 

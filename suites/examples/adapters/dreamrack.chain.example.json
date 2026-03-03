@@ -1,0 +1,47 @@
+{
+  "schemaVersion": 1,
+  "pluginId": "dreamrack",
+  "moduleOrder": ["preamp", "eq", "compressor", "saturation", "limiter"],
+  "globalInit": [
+    { "param": "Mix", "value": "100%" },
+    { "param": "Output Trim", "value": "0 dB" }
+  ],
+  "moduleIsolation": [
+    {
+      "module": "eq",
+      "set": [
+        { "param": "Selected Module", "value": "EQ" },
+        { "param": "EQ Bypass", "value": "Off" },
+        { "param": "Compressor Bypass", "value": "On" },
+        { "param": "Saturation Bypass", "value": "On" },
+        { "param": "Limiter Bypass", "value": "On" }
+      ]
+    },
+    {
+      "module": "compressor",
+      "set": [
+        { "param": "Selected Module", "value": "Compressor" },
+        { "param": "EQ Bypass", "value": "On" },
+        { "param": "Compressor Bypass", "value": "Off" },
+        { "param": "Saturation Bypass", "value": "On" },
+        { "param": "Limiter Bypass", "value": "On" }
+      ]
+    }
+  ],
+  "modeVariants": [
+    {
+      "id": "eq_os_1x",
+      "module": "eq",
+      "set": [
+        { "param": "Oversampling", "value": "1x" }
+      ]
+    },
+    {
+      "id": "eq_os_4x",
+      "module": "eq",
+      "set": [
+        { "param": "Oversampling", "value": "4x" }
+      ]
+    }
+  ]
+}

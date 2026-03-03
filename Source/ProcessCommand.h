@@ -24,6 +24,8 @@ class ProcessCommand : public CLICommand {
     std::optional<unsigned int> outputBitDepthOpt;
     std::optional<juce::File> paramsFileOpt;
     std::vector<std::string> params;
+    unsigned int seed = 1337;
+    bool jsonOutput = false;
 
     /**
      * Creates readers for the given audio files, verifying that their sample rate matches.

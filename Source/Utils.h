@@ -3,10 +3,14 @@
 #include <juce_audio_processors/juce_audio_processors.h>
 
 struct CLIException : std::runtime_error {
-    explicit CLIException(const std::string& message) : std::runtime_error(message) {}
-    explicit CLIException(const char* message) : std::runtime_error(message) {}
-    explicit CLIException(const juce::String& message)
-        : std::runtime_error(message.toStdString()) {}
+    explicit CLIException(const std::string& message, int exitCode = 2)
+        : std::runtime_error(message), exitCode(exitCode) {}
+    explicit CLIException(const char* message, int exitCode = 2)
+        : std::runtime_error(message), exitCode(exitCode) {}
+    explicit CLIException(const juce::String& message, int exitCode = 2)
+        : std::runtime_error(message.toStdString()), exitCode(exitCode) {}
+
+    int exitCode;
 };
 
 /**
@@ -39,6 +43,11 @@ float parseFloatStrict(const std::string& str);
  * @throws std::invalid_argument If the input is not a valid number.
  */
 unsigned long parseULongStrict(const std::string& str);
+
+/**
+ * Adds all enabled plugin host formats to the format manager.
+ */
+void addEnabledPluginFormats(juce::AudioPluginFormatManager& manager);
 
 class PluginUtils {
   public:

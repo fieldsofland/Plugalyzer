@@ -1,9 +1,9 @@
 [submodule "JUCE"]
 	path = JUCE
-	url = git@github.com:juce-framework/JUCE.git
+	url = https://github.com/juce-framework/JUCE.git
 [submodule "CLI11"]
 	path = CLI11
-	url = git@github.com:CLIUtils/CLI11.git
+	url = https://github.com/CLIUtils/CLI11.git
 [submodule "json"]
 	path = json
-	url = git@github.com:nlohmann/json.git
+	url = https://github.com/nlohmann/json.git

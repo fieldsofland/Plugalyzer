@@ -1,0 +1,59 @@
+{
+  "schemaVersion": 1,
+  "name": "dreamrack-regression",
+  "plugins": [
+    {
+      "id": "dreamrack",
+      "path": "/abs/path/Dreamrack.vst3",
+      "format": "vst3",
+      "adapter": "adapters/dreamrack.chain.example.json"
+    }
+  ],
+  "matrix": {
+    "sampleRates": [44100, 48000, 96000],
+    "blockSizes": [64, 256, 1024],
+    "channels": ["mono", "stereo"]
+  },
+  "signals": [
+    { "id": "sine_1k", "type": "sine", "frequencyHz": 1000, "levelDbfs": -18, "durationSec": 8 },
+    { "id": "hf_sweep", "type": "logSweep", "startHz": 20, "endHz": 22000, "durationSec": 12, "levelDbfs": -18 },
+    { "id": "impulse", "type": "impulse", "durationSec": 2, "levelDbfs": 0 },
+    { "id": "silence", "type": "silence", "durationSec": 10 }
+  ],
+  "tests": [
+    { "id": "load_smoke", "type": "load", "plugin": "dreamrack", "signal": "silence" },
+    { "id": "alias_main", "type": "aliasing", "plugin": "dreamrack", "signal": "hf_sweep" },
+    { "id": "eq_curve", "type": "eqCurve", "plugin": "dreamrack", "signal": "hf_sweep" },
+    { "id": "noise_dc", "type": "noiseDc", "plugin": "dreamrack", "signal": "silence" },
+    { "id": "latency", "type": "latency", "plugin": "dreamrack", "signal": "impulse" },
+    { "id": "roundtrip", "type": "stateRoundtrip", "plugin": "dreamrack", "signal": "sine_1k" },
+    { "id": "perf", "type": "perfStress", "plugin": "dreamrack", "signal": "sine_1k" },
+    { "id": "validate_pluginval", "type": "validate", "plugin": "dreamrack", "signal": "silence", "runPluginval": true }
+  ],
+  "thresholdProfiles": {
+    "default": {
+      "aliasingRatioDbMax": -70,
+      "eqMaxErrorDb": 1.0,
+      "eqRmsErrorDb": 0.35,
+      "noiseFloorDbfsMax": -90,
+      "latencyErrorSamplesMax": 1,
+      "determinismResidualDbfsMax": -110,
+      "thdnDbMax": -80,
+      "imdDbMax": -70,
+      "phaseDeviationDegMax": 30,
+      "bypassClickPeakDbfsMax": -70,
+      "zipperArtifactDbMax": -65,
+      "minRealtimeFactor": 1.0,
+      "maxMemoryDriftMb": 100,
+      "baselineMetricDeltaMax": 0.5
+    }
+  },
+  "baseline": {
+    "strict": true,
+    "metricTolerance": 0.5
+  },
+  "pluginval": {
+    "required": false,
+    "strictness": 5
+  }
+}

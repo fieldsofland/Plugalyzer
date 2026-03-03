@@ -1,0 +1,80 @@
+name: CI
+
+on:
+  push:
+    branches: ["main", "codex/**"]
+  pull_request:
+
+jobs:
+  build-and-smoke:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest, windows-latest]
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Resolve Binary Path
+        id: bin
+        shell: bash
+        run: |
+          if [[ -f "build/Plugalyzer_artefacts/Release/vst-test" ]]; then
+            echo "path=build/Plugalyzer_artefacts/Release/vst-test" >> "$GITHUB_OUTPUT"
+          elif [[ -f "build/Plugalyzer_artefacts/Release/vst-test.exe" ]]; then
+            echo "path=build/Plugalyzer_artefacts/Release/vst-test.exe" >> "$GITHUB_OUTPUT"
+          elif [[ -f "build/Release/vst-test.exe" ]]; then
+            echo "path=build/Release/vst-test.exe" >> "$GITHUB_OUTPUT"
+          else
+            echo "Could not locate vst-test binary" >&2
+            find build -maxdepth 5 -type f || true
+            exit 1
+          fi
+
+      - name: CLI Help Smoke
+        run: |
+          "${{ steps.bin.outputs.path }}" --help
+          "${{ steps.bin.outputs.path }}" run --help
+
+      - name: Run Failure Smoke (expected non-zero)
+        shell: bash
+        run: |
+          mkdir -p .ci-smoke
+          cat > .ci-smoke/suite.json <<'JSON'
+          {
+            "schemaVersion": 1,
+            "name": "ci-smoke",
+            "plugins": [{"id":"missing","path":"/does/not/exist.vst3","format":"vst3"}],
+            "matrix": {"sampleRates":[44100],"blockSizes":[256],"channels":["stereo"]},
+            "signals": [{"id":"silence","type":"silence","durationSec":1}],
+            "tests": [{"id":"load","type":"load","plugin":"missing","signal":"silence","includeModuleIsolation":false}]
+          }
+          JSON
+
+          set +e
+          "${{ steps.bin.outputs.path }}" run --suite .ci-smoke/suite.json --out-dir .ci-smoke/runs --json > .ci-smoke/run.json
+          EXIT_CODE=$?
+          set -e
+
+          if [[ "$EXIT_CODE" -ne 3 ]]; then
+            echo "Expected exit code 3 from failing smoke suite, got $EXIT_CODE" >&2
+            exit 1
+          fi
+
+      - name: Upload Smoke Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-${{ matrix.os }}
+          path: .ci-smoke
+          if-no-files-found: warn

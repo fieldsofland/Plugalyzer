@@ -1,60 +1,96 @@
-#include "ListParametersCommand.h"
+#include "BaselineCommand.h"
+#include "InspectCommand.h"
 #include "ProcessCommand.h"
+#include "ReportCommand.h"
+#include "RunCommand.h"
+#include "ScanCommand.h"
+#include "Utils.h"
+#include "ValidateCommand.h"
+#include "WorkerCaseCommand.h"
 #include <juce_events/juce_events.h>
 
-void registerSubcommand(CLI::App& app, CLICommand& subcommand) {
-    app.add_subcommand(subcommand.createApp())->callback([&subcommand]() { subcommand.execute(); });
+namespace {
+
+void registerSubcommand(CLI::App& app, CLICommand& command,
+                        const std::vector<std::string>& aliases = {}, bool hidden = false) {
+    auto sub = app.add_subcommand(command.createApp());
+    for (const auto& alias : aliases) {
+        sub->alias(alias);
+    }
+
+    if (hidden) {
+        sub->group("");
+    }
+
+    sub->callback([&command]() { command.execute(); });
 }
 
 int runCommandLine(const std::string& commandLineParameters) {
-    CLI::App app("Command-line audio plugin host");
+    CLI::App app("vst-test - command-line audio plugin testing harness");
 
-    // set up subcommands
-    ProcessCommand pc;
-    registerSubcommand(app, pc);
+    ProcessCommand render;
+    registerSubcommand(app, render, {"process"});
 
-    ListParametersCommand lpc;
-    registerSubcommand(app, lpc);
+    InspectCommand inspect;
+    registerSubcommand(app, inspect, {"listParameters"});
+
+    ScanCommand scan;
+    registerSubcommand(app, scan);
+
+    ValidateCommand validate;
+    registerSubcommand(app, validate);
+
+    RunCommand run;
+    registerSubcommand(app, run);
+
+    BaselineCommand baseline;
+    registerSubcommand(app, baseline);
+
+    ReportCommand report;
+    registerSubcommand(app, report);
+
+    WorkerCaseCommand worker;
+    registerSubcommand(app, worker, {}, true);
 
     app.require_subcommand();
 
     try {
         app.parse(commandLineParameters, false);
-    } catch (const CLI::Error& error) {
+    } catch (const CLI::ParseError& error) {
         return app.exit(error);
-    } catch (const std::exception& e) {
-        std::cerr << e.what() << std::endl;
-        return 1;
+    } catch (const CLIException& error) {
+        std::cerr << error.what() << std::endl;
+        return error.exitCode;
+    } catch (const std::exception& error) {
+        std::cerr << error.what() << std::endl;
+        return 2;
     }
 
     return 0;
 }
 
-class PlugalyzerApplication : public juce::JUCEApplicationBase {
+class VstTestApplication : public juce::JUCEApplicationBase {
   public:
     const juce::String getApplicationName() override { return JUCE_APPLICATION_NAME_STRING; }
     const juce::String getApplicationVersion() override { return JUCE_APPLICATION_VERSION_STRING; }
 
     bool moreThanOneInstanceAllowed() override { return true; }
 
-    void anotherInstanceStarted(const juce::String& commandLine) override {}
+    void anotherInstanceStarted(const juce::String&) override {}
     void suspended() override {}
     void resumed() override {}
     void shutdown() override {}
+    void unhandledException(const std::exception*, const juce::String&, int) override {}
 
     void systemRequestedQuit() override { quit(); }
 
-    void unhandledException(const std::exception* exception, const juce::String& sourceFilename,
-                            int lineNumber) override {
-        // for some reason, this doesn't actually get called and the runtime just terminates...
-    }
-
     void initialise(const juce::String& commandLineParameters) override {
-        int exitCode = runCommandLine(commandLineParameters.toStdString());
-
+        const auto exitCode = runCommandLine(commandLineParameters.toStdString());
         setApplicationReturnValue(exitCode);
         quit();
     }
 };
 
-START_JUCE_APPLICATION(PlugalyzerApplication)
+} // namespace
+
+START_JUCE_APPLICATION(VstTestApplication)

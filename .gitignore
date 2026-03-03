@@ -21,3 +21,7 @@ Testing
 
 # clion cmake builds
 cmake-build-*
+build/
+.vst-test/runs/
+.ci-smoke/
+.ci-smoke*/

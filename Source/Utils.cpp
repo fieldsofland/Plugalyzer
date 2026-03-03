@@ -19,11 +19,19 @@ unsigned long parseULongStrict(const std::string &str) {
     PARSE_STRICT(std::stoul);
 }
 
+void addEnabledPluginFormats(juce::AudioPluginFormatManager& manager) {
+#if defined(JUCE_AUDIO_PROCESSORS_HEADLESS_H_INCLUDED)
+    juce::addHeadlessDefaultFormatsToManager(manager);
+#else
+    juce::addDefaultFormatsToManager(manager);
+#endif
+}
+
 std::unique_ptr<juce::AudioPluginInstance>
 PluginUtils::createPluginInstance(const juce::String& pluginPath, double initialSampleRate,
                                   int initialBlockSize) {
     juce::AudioPluginFormatManager audioPluginFormatManager;
-    audioPluginFormatManager.addDefaultFormats();
+    addEnabledPluginFormats(audioPluginFormatManager);
 
     // parse the plugin path into a PluginDescription instance
     juce::PluginDescription pluginDescription;
