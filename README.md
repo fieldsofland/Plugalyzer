@@ -142,16 +142,19 @@ vst-test run --suite suites/dreamrack.json --out-dir .vst-test/runs --jobs 4 --j
 
 ### Preset Gain Alignment Example
 
-Use `presetGain` to load a preset set and check output level spread from a sine reference.
+Use `presetGain` to load presets and align perceived loudness (LUFS-style, ungated K-weighted) to a target bump over input.
 
 ```json
 {
   "id": "preset_gain_alignment",
   "type": "presetGain",
   "plugin": "myplugin",
-  "signal": "hf_sweep",
+  "signal": "sine_1k",
+  "presetSource": "auto",
   "presetDirectory": "/abs/path/presets",
   "presetExtensions": [".vstpreset", ".fxp"],
+  "targetOutputDeltaDb": 1.0,
+  "presetUseSineInput": true,
   "presetFrequencyHz": 1000.0,
   "presetLevelDbfs": -18.0,
   "presetDurationSec": 3.0,
@@ -163,8 +166,17 @@ Use `presetGain` to load a preset set and check output level spread from a sine 
 Artifact:
 
 - `artifacts/<case-id>/preset_gain_summary.json`
+- `artifacts/<case-id>/preset_gain_adjustments.csv`
+- `artifacts/<case-id>/preset_gain_adjustments.md`
 
-If the selected test signal is not `sine`, `presetGain` will synthesize a sine internally using `presetFrequencyHz`/`presetLevelDbfs`/`presetDurationSec`.
+Preset switching sources for `presetGain`:
+
+- `presetSource="files"`: use `presetFiles` / `presetDirectory`
+- `presetSource="programs"`: iterate plugin program indices
+- `presetSource="parameter"`: iterate `presetParamName` with `presetParamValues`
+- `presetSource="auto"`: choose files first, then parameter mode, then program mode
+
+By default, `presetGain` uses a sine input and computes loudness alignment against `input + targetOutputDeltaDb` (default `+1.0 dB`).
 
 ## Chain Adapter Example
 

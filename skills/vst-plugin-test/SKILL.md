@@ -66,8 +66,11 @@ When `testType=aliasing`, use:
 
 When `testType=presetGain`, use:
 
-- `metrics.presetGainSpreadDb`: max-min output RMS spread across presets
-- `artifacts.presetGainSummary`: per-preset RMS/peak details
+- `metrics.presetGainSpreadDb`: max-min output loudness spread (LUFS) across presets
+- `metrics.presetInputLufs` / `metrics.presetTargetLufs`: loudness target baseline
+- `artifacts.presetGainSummary`: per-variant loudness and trim recommendations
+- `artifacts.presetGainAdjustmentsCsv`: spreadsheet-friendly gain adjustment table
+- `artifacts.presetGainAdjustmentsMd`: readable Markdown adjustment table
 
 ## Exit codes
 

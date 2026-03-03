@@ -76,6 +76,24 @@ void applyParameters(juce::AudioPluginInstance& plugin,
     }
 }
 
+void applyProgram(juce::AudioPluginInstance& plugin, const std::optional<int>& programIndex) {
+    if (!programIndex) {
+        return;
+    }
+
+    const int numPrograms = plugin.getNumPrograms();
+    if (numPrograms <= 0) {
+        throw std::runtime_error("Plugin does not expose programs for program-index selection");
+    }
+
+    if (*programIndex < 0 || *programIndex >= numPrograms) {
+        throw std::runtime_error("Program index out of range: " + std::to_string(*programIndex) +
+                                 " (numPrograms=" + std::to_string(numPrograms) + ")");
+    }
+
+    plugin.setCurrentProgram(*programIndex);
+}
+
 juce::AudioPluginInstance::BusesLayout createLayout(const juce::AudioPluginInstance& plugin,
                                                     int channels, int& inputChannelsOut,
                                                     int& outputChannelsOut) {
@@ -186,6 +204,7 @@ std::unique_ptr<juce::AudioPluginInstance> createConfiguredPlugin(const RenderRe
         plugin->setStateInformation(request.stateToLoad->getData(),
                                     static_cast<int>(request.stateToLoad->getSize()));
     } else {
+        applyProgram(*plugin, request.programIndex);
         applyPreset(*plugin, request.presetPath);
         applyParameters(*plugin, request.parameterSets);
     }
@@ -209,6 +228,26 @@ juce::MemoryBlock RenderEngine::captureState(const RenderRequest& request) {
     juce::MemoryBlock state;
     plugin->getStateInformation(state);
     return state;
+}
+
+std::vector<ProgramInfo> RenderEngine::listPrograms(const std::string& pluginPath, int sampleRate,
+                                                    int blockSize) {
+    std::vector<ProgramInfo> programs;
+    auto plugin = PluginUtils::createPluginInstance(pluginPath, sampleRate, blockSize);
+
+    const int numPrograms = plugin->getNumPrograms();
+    for (int index = 0; index < numPrograms; ++index) {
+        ProgramInfo info;
+        info.index = index;
+        auto name = plugin->getProgramName(index).trim();
+        if (name.isEmpty()) {
+            name = "Program " + juce::String(index);
+        }
+        info.name = name.toStdString();
+        programs.push_back(info);
+    }
+
+    return programs;
 }
 
 } // namespace vstest

@@ -32,8 +32,11 @@
       "plugin": "dreamrack",
       "signal": "sine_1k",
       "includeModuleIsolation": false,
+      "presetSource": "auto",
       "presetDirectory": "/abs/path/to/dreamrack/presets",
       "presetExtensions": [".vstpreset"],
+      "targetOutputDeltaDb": 1.0,
+      "presetUseSineInput": true,
       "measurementWarmupSec": 0.5,
       "measurementDurationSec": 2.0
     },

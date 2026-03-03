@@ -11,6 +11,7 @@ namespace vstest {
 struct RenderRequest {
     std::string pluginPath;
     std::optional<std::string> presetPath;
+    std::optional<int> programIndex;
     std::vector<ParameterAssignment> parameterSets;
     std::optional<juce::MemoryBlock> stateToLoad;
     int sampleRate = 44100;
@@ -30,10 +31,17 @@ struct RenderResult {
     double realtimeFactor = 0.0;
 };
 
+struct ProgramInfo {
+    int index = 0;
+    std::string name;
+};
+
 class RenderEngine {
   public:
     static RenderResult render(const RenderRequest& request);
     static juce::MemoryBlock captureState(const RenderRequest& request);
+    static std::vector<ProgramInfo> listPrograms(const std::string& pluginPath, int sampleRate,
+                                                 int blockSize);
 };
 
 } // namespace vstest

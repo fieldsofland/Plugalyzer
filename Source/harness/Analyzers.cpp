@@ -8,8 +8,10 @@
 #include <juce_dsp/juce_dsp.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <fstream>
+#include <iomanip>
 #include <limits>
 #include <numeric>
 #include <sstream>
@@ -94,6 +96,53 @@ double computeRmsRange(const juce::AudioBuffer<float>& buffer, int startSample, 
     }
 
     return std::sqrt(static_cast<double>(sumSquares / count));
+}
+
+double computeIntegratedLufsUngated(const juce::AudioBuffer<float>& buffer, int sampleRate,
+                                    int startSample, int sampleCount) {
+    if (sampleRate <= 0 || buffer.getNumChannels() == 0 || buffer.getNumSamples() == 0 ||
+        sampleCount <= 0) {
+        return -400.0;
+    }
+
+    const int start = std::clamp(startSample, 0, buffer.getNumSamples());
+    const int end = std::clamp(start + sampleCount, start, buffer.getNumSamples());
+    const int countPerChannel = end - start;
+    if (countPerChannel <= 0) {
+        return -400.0;
+    }
+
+    const auto hpCoefficients = juce::dsp::IIR::Coefficients<float>::makeHighPass(
+        static_cast<double>(sampleRate), 38.13547087602444, 0.5003270373238773);
+    const auto shelfCoefficients = juce::dsp::IIR::Coefficients<float>::makeHighShelf(
+        static_cast<double>(sampleRate), 1681.974450955533, 0.7071752369554196,
+        juce::Decibels::decibelsToGain(4.0f));
+
+    double weightedMeanSquareSum = 0.0;
+    for (int ch = 0; ch < buffer.getNumChannels(); ++ch) {
+        juce::dsp::IIR::Filter<float> hp;
+        juce::dsp::IIR::Filter<float> shelf;
+        hp.coefficients = hpCoefficients;
+        shelf.coefficients = shelfCoefficients;
+        hp.reset();
+        shelf.reset();
+
+        const auto* read = buffer.getReadPointer(ch);
+        long double channelEnergy = 0.0;
+        for (int sample = start; sample < end; ++sample) {
+            float value = hp.processSample(read[sample]);
+            value = shelf.processSample(value);
+            channelEnergy += static_cast<long double>(value) * static_cast<long double>(value);
+        }
+
+        const double channelMeanSquare = static_cast<double>(channelEnergy) /
+                                         static_cast<double>(countPerChannel);
+        weightedMeanSquareSum += channelMeanSquare;
+    }
+
+    const double channelAverageMeanSquare =
+        weightedMeanSquareSum / static_cast<double>(buffer.getNumChannels());
+    return -0.691 + 10.0 * std::log10(channelAverageMeanSquare + 1e-30);
 }
 
 double residualRmsDbfs(const juce::AudioBuffer<float>& a, const juce::AudioBuffer<float>& b) {
@@ -573,105 +622,425 @@ std::string sanitizeFileStem(const juce::String& value) {
     return out;
 }
 
+std::string toLower(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    return value;
+}
+
+std::string jsonValueToString(const nlohmann::json& value) {
+    if (value.is_string()) {
+        return value.get<std::string>();
+    }
+
+    if (value.is_number_float()) {
+        std::ostringstream out;
+        out << std::fixed << std::setprecision(6) << value.get<double>();
+        return out.str();
+    }
+
+    if (value.is_number_integer() || value.is_number_unsigned()) {
+        return std::to_string(value.get<long long>());
+    }
+
+    if (value.is_boolean()) {
+        return value.get<bool>() ? "true" : "false";
+    }
+
+    return value.dump();
+}
+
+std::string formatDb(double value) {
+    std::ostringstream out;
+    out << std::fixed << std::setprecision(2) << value;
+    return out.str();
+}
+
+std::string csvEscape(const std::string& value) {
+    if (value.find_first_of(",\"\n\r") == std::string::npos) {
+        return value;
+    }
+
+    std::string escaped = "\"";
+    for (const char c : value) {
+        if (c == '"') {
+            escaped += "\"\"";
+        } else {
+            escaped.push_back(c);
+        }
+    }
+    escaped.push_back('"');
+    return escaped;
+}
+
+bool hasPresetFileConfig(const nlohmann::json& extra) {
+    if (extra.contains("presetDirectory") && extra["presetDirectory"].is_string() &&
+        !extra["presetDirectory"].get<std::string>().empty()) {
+        return true;
+    }
+
+    if (extra.contains("presetFiles") && extra["presetFiles"].is_array() &&
+        !extra["presetFiles"].empty()) {
+        return true;
+    }
+
+    return false;
+}
+
+struct PresetVariant {
+    std::string id;
+    std::string label;
+    std::string source;
+    std::optional<std::string> presetPath;
+    std::optional<int> programIndex;
+    std::vector<ParameterAssignment> parameterOverrides;
+};
+
+struct PresetGainRow {
+    PresetVariant variant;
+    double inputLufs = 0.0;
+    double outputLufs = 0.0;
+    double deltaVsInputDb = 0.0;
+    double targetOutputLufs = 0.0;
+    double recommendedTrimDb = 0.0;
+    double outputPeakDbfs = 0.0;
+    double outputRmsDbfs = 0.0;
+    double realtimeFactor = 0.0;
+};
+
+std::vector<PresetVariant> collectPresetVariants(const CaseSpec& caseSpec) {
+    std::vector<PresetVariant> variants;
+    auto mode = toLower(caseSpec.extra.value("presetSource", "auto"));
+
+    if (mode == "auto") {
+        if (hasPresetFileConfig(caseSpec.extra)) {
+            mode = "files";
+        } else if (caseSpec.extra.contains("presetParamName")) {
+            mode = "parameter";
+        } else if (!RenderEngine::listPrograms(caseSpec.pluginPath, caseSpec.sampleRate,
+                                               caseSpec.blockSize)
+                        .empty()) {
+            mode = "programs";
+        } else {
+            throw std::runtime_error(
+                "presetGain auto mode could not find preset files, parameter selector, or plugin programs");
+        }
+    }
+
+    if (mode == "files") {
+        const auto presetFiles = collectPresetFiles(caseSpec.extra);
+        for (size_t index = 0; index < presetFiles.size(); ++index) {
+            PresetVariant variant;
+            variant.id = "file_" + std::to_string(index);
+            variant.label = presetFiles[index].getFileNameWithoutExtension().toStdString();
+            variant.source = "file";
+            variant.presetPath = presetFiles[index].getFullPathName().toStdString();
+            variants.push_back(variant);
+        }
+        return variants;
+    }
+
+    if (mode == "programs") {
+        const auto programs =
+            RenderEngine::listPrograms(caseSpec.pluginPath, caseSpec.sampleRate, caseSpec.blockSize);
+        if (programs.empty()) {
+            throw std::runtime_error(
+                "presetGain requested presetSource=programs but plugin exposes no programs");
+        }
+
+        std::set<int> allowedProgramIndices;
+        if (caseSpec.extra.contains("programIndices") && caseSpec.extra["programIndices"].is_array()) {
+            for (const auto& indexJson : caseSpec.extra["programIndices"]) {
+                if (indexJson.is_number_integer()) {
+                    allowedProgramIndices.insert(indexJson.get<int>());
+                }
+            }
+        }
+
+        const int programLimit = std::max(0, caseSpec.extra.value("programLimit", 0));
+        int added = 0;
+        for (const auto& program : programs) {
+            if (!allowedProgramIndices.empty() &&
+                !allowedProgramIndices.contains(program.index)) {
+                continue;
+            }
+
+            PresetVariant variant;
+            variant.id = "program_" + std::to_string(program.index);
+            variant.label = program.name;
+            variant.source = "program";
+            variant.programIndex = program.index;
+            variants.push_back(variant);
+            ++added;
+
+            if (programLimit > 0 && added >= programLimit) {
+                break;
+            }
+        }
+
+        if (variants.empty()) {
+            throw std::runtime_error("presetGain program selection produced no matching programs");
+        }
+
+        return variants;
+    }
+
+    if (mode == "parameter") {
+        const auto paramName = caseSpec.extra.value("presetParamName", "");
+        if (paramName.empty()) {
+            throw std::runtime_error("presetGain parameter mode requires presetParamName");
+        }
+
+        if (!caseSpec.extra.contains("presetParamValues") ||
+            !caseSpec.extra["presetParamValues"].is_array() ||
+            caseSpec.extra["presetParamValues"].empty()) {
+            throw std::runtime_error(
+                "presetGain parameter mode requires non-empty presetParamValues[]");
+        }
+
+        size_t index = 0;
+        for (const auto& valueJson : caseSpec.extra["presetParamValues"]) {
+            const std::string valueString = jsonValueToString(valueJson);
+
+            PresetVariant variant;
+            variant.id = "param_" + std::to_string(index);
+            variant.label = paramName + "=" + valueString;
+            variant.source = "parameter";
+            variant.parameterOverrides.push_back({paramName, valueString});
+            variants.push_back(variant);
+            ++index;
+        }
+
+        return variants;
+    }
+
+    throw std::runtime_error("Unsupported presetSource for presetGain: " + mode);
+}
+
+void writePresetGainTables(const juce::File& artifactDir, const std::vector<PresetGainRow>& rows,
+                           CaseResult& result) {
+    const auto csvPath = artifactDir.getChildFile("preset_gain_adjustments.csv");
+    std::ostringstream csv;
+    csv << "preset,source,input_lufs,output_lufs,delta_vs_input_db,target_output_lufs,"
+           "recommended_output_trim_db,output_peak_dbfs,output_rms_dbfs,realtime_factor,preset_path,program_index\n";
+
+    for (const auto& row : rows) {
+        csv << csvEscape(row.variant.label) << ",";
+        csv << csvEscape(row.variant.source) << ",";
+        csv << formatDb(row.inputLufs) << ",";
+        csv << formatDb(row.outputLufs) << ",";
+        csv << formatDb(row.deltaVsInputDb) << ",";
+        csv << formatDb(row.targetOutputLufs) << ",";
+        csv << formatDb(row.recommendedTrimDb) << ",";
+        csv << formatDb(row.outputPeakDbfs) << ",";
+        csv << formatDb(row.outputRmsDbfs) << ",";
+        csv << formatDb(row.realtimeFactor) << ",";
+        csv << csvEscape(row.variant.presetPath.value_or("")) << ",";
+        csv << (row.variant.programIndex ? std::to_string(*row.variant.programIndex) : "") << "\n";
+    }
+
+    csvPath.replaceWithText(csv.str());
+    result.artifacts["presetGainAdjustmentsCsv"] = csvPath.getFullPathName().toStdString();
+
+    const auto markdownPath = artifactDir.getChildFile("preset_gain_adjustments.md");
+    std::ostringstream markdown;
+    markdown << "# Preset Gain Adjustments\n\n";
+    markdown << "| Preset | Source | Output LUFS | Input LUFS | Delta (dB) | Target LUFS | Recommended Trim (dB) | Peak (dBFS) |\n";
+    markdown << "|---|---:|---:|---:|---:|---:|---:|---:|\n";
+    for (const auto& row : rows) {
+        markdown << "| " << row.variant.label << " | " << row.variant.source << " | "
+                 << formatDb(row.outputLufs) << " | " << formatDb(row.inputLufs) << " | "
+                 << formatDb(row.deltaVsInputDb) << " | " << formatDb(row.targetOutputLufs)
+                 << " | " << formatDb(row.recommendedTrimDb) << " | "
+                 << formatDb(row.outputPeakDbfs) << " |\n";
+    }
+
+    markdown << "\n";
+    markdown << "Recommended Trim (dB) is the per-preset output gain change needed to hit the target loudness.\n";
+
+    markdownPath.replaceWithText(markdown.str());
+    result.artifacts["presetGainAdjustmentsMd"] =
+        markdownPath.getFullPathName().toStdString();
+}
+
 void runPresetGainSpread(const CaseSpec& caseSpec, const RenderRequest& baseRequest, CaseResult& result,
                          unsigned int seed) {
-    auto presetFiles = collectPresetFiles(caseSpec.extra);
+    const auto variants = collectPresetVariants(caseSpec);
     const bool keepCaseParameterSets = caseSpec.extra.value("presetApplyParameterSets", false);
     const bool writePerPresetAudio = caseSpec.extra.value("writePresetAudio", false);
 
+    const bool presetUseSineInput = caseSpec.extra.value("presetUseSineInput", true);
+    const double targetOutputDeltaDb = caseSpec.extra.value("targetOutputDeltaDb", 1.0);
     const double warmupSec = std::max(0.0, caseSpec.extra.value("measurementWarmupSec", 0.5));
     const double measurementDurationSec = std::max(0.0, caseSpec.extra.value("measurementDurationSec", 0.0));
 
+    SignalDefinition analysisSignal = caseSpec.signal;
+    if (presetUseSineInput || analysisSignal.type != "sine") {
+        analysisSignal.type = "sine";
+        analysisSignal.frequencyHz = caseSpec.extra.value("presetFrequencyHz", 1000.0);
+        analysisSignal.durationSec =
+            caseSpec.extra.value("presetDurationSec", std::max(3.0, caseSpec.signal.durationSec));
+        analysisSignal.levelDbfs =
+            caseSpec.extra.value("presetLevelDbfs", caseSpec.signal.levelDbfs);
+    }
+
+    const auto baseInput =
+        SignalGenerator::generate(analysisSignal, caseSpec.sampleRate, caseSpec.channels, seed);
+    const int measurementStartSample = static_cast<int>(std::round(warmupSec * caseSpec.sampleRate));
+    const int inputRemainingSamples =
+        std::max(1, baseInput.getNumSamples() - measurementStartSample);
+    const int requestedMeasurementSamples =
+        (measurementDurationSec > 0.0)
+            ? std::clamp(
+                  static_cast<int>(std::round(measurementDurationSec * caseSpec.sampleRate)), 1,
+                  inputRemainingSamples)
+            : inputRemainingSamples;
+
+    const double inputRmsDbfs =
+        linearToDb(computeRmsRange(baseInput, measurementStartSample, requestedMeasurementSamples));
+    const double inputLufs = computeIntegratedLufsUngated(
+        baseInput, caseSpec.sampleRate, measurementStartSample, requestedMeasurementSamples);
+    const double targetOutputLufs = inputLufs + targetOutputDeltaDb;
+
     const auto artifactDir = juce::File(caseSpec.artifactsDir);
     nlohmann::json detail;
-    detail["method"] = "preset_output_rms_spread_v1";
+    detail["method"] = "preset_loudness_alignment_v2";
     detail["sampleRate"] = caseSpec.sampleRate;
     detail["blockSize"] = caseSpec.blockSize;
     detail["channels"] = caseSpec.channels;
+    detail["signal"] = {
+        {"type", analysisSignal.type},
+        {"frequencyHz", analysisSignal.frequencyHz},
+        {"levelDbfs", analysisSignal.levelDbfs},
+        {"durationSec", analysisSignal.durationSec},
+    };
     detail["warmupSec"] = warmupSec;
     detail["measurementDurationSec"] = measurementDurationSec;
+    detail["targetOutputDeltaDb"] = targetOutputDeltaDb;
+    detail["inputRmsDbfs"] = inputRmsDbfs;
+    detail["inputLufs"] = inputLufs;
+    detail["targetOutputLufs"] = targetOutputLufs;
 
-    double minDb = std::numeric_limits<double>::infinity();
-    double maxDb = -std::numeric_limits<double>::infinity();
-    double sumDb = 0.0;
+    double minLufs = std::numeric_limits<double>::infinity();
+    double maxLufs = -std::numeric_limits<double>::infinity();
+    double sumLufs = 0.0;
+    double sumRecommendedTrimDb = 0.0;
+    double sumRealtimeFactor = 0.0;
     std::string minPreset;
     std::string maxPreset;
 
-    nlohmann::json presets = nlohmann::json::array();
-    for (size_t index = 0; index < presetFiles.size(); ++index) {
+    std::vector<PresetGainRow> rows;
+    rows.reserve(variants.size());
+
+    nlohmann::json variantsJson = nlohmann::json::array();
+    for (size_t index = 0; index < variants.size(); ++index) {
         auto presetRequest = baseRequest;
-        presetRequest.presetPath = presetFiles[index].getFullPathName().toStdString();
+        presetRequest.input = baseInput;
+        presetRequest.presetPath = variants[index].presetPath;
+        presetRequest.programIndex = variants[index].programIndex;
+
         if (!keepCaseParameterSets) {
             presetRequest.parameterSets.clear();
         }
-
-        if (caseSpec.signal.type != "sine") {
-            SignalDefinition sineSignal = caseSpec.signal;
-            sineSignal.type = "sine";
-            sineSignal.frequencyHz = caseSpec.extra.value("presetFrequencyHz", 1000.0);
-            sineSignal.durationSec = caseSpec.extra.value("presetDurationSec", std::max(3.0, caseSpec.signal.durationSec));
-            sineSignal.levelDbfs = caseSpec.extra.value("presetLevelDbfs", caseSpec.signal.levelDbfs);
-            presetRequest.input =
-                SignalGenerator::generate(sineSignal, caseSpec.sampleRate, caseSpec.channels,
-                                          seed + static_cast<unsigned int>(index + 1) * 131u);
-        }
+        presetRequest.parameterSets.insert(presetRequest.parameterSets.end(),
+                                           variants[index].parameterOverrides.begin(),
+                                           variants[index].parameterOverrides.end());
 
         const auto rendered = RenderEngine::render(presetRequest);
-        const int startSample = static_cast<int>(std::round(warmupSec * caseSpec.sampleRate));
-        const int remainingSamples = std::max(1, rendered.output.getNumSamples() - startSample);
-        int measurementSamples = remainingSamples;
-        if (measurementDurationSec > 0.0) {
-            measurementSamples = std::clamp(
-                static_cast<int>(std::round(measurementDurationSec * caseSpec.sampleRate)), 1,
-                remainingSamples);
-        }
+        const int outputRemainingSamples =
+            std::max(1, rendered.output.getNumSamples() - measurementStartSample);
+        const int outputMeasurementSamples =
+            std::clamp(requestedMeasurementSamples, 1, outputRemainingSamples);
 
-        const double rmsDbfs = linearToDb(computeRmsRange(rendered.output, startSample, measurementSamples));
+        const double outputRmsDbfs = linearToDb(
+            computeRmsRange(rendered.output, measurementStartSample, outputMeasurementSamples));
+        const double outputLufs = computeIntegratedLufsUngated(
+            rendered.output, caseSpec.sampleRate, measurementStartSample,
+            outputMeasurementSamples);
         const double peakDbfs = linearToDb(computePeak(rendered.output));
 
-        if (rmsDbfs < minDb) {
-            minDb = rmsDbfs;
-            minPreset = presetFiles[index].getFileName().toStdString();
+        if (outputLufs < minLufs) {
+            minLufs = outputLufs;
+            minPreset = variants[index].label;
         }
-        if (rmsDbfs > maxDb) {
-            maxDb = rmsDbfs;
-            maxPreset = presetFiles[index].getFileName().toStdString();
+        if (outputLufs > maxLufs) {
+            maxLufs = outputLufs;
+            maxPreset = variants[index].label;
         }
-        sumDb += rmsDbfs;
 
-        nlohmann::json presetJson;
-        presetJson["preset"] = presetFiles[index].getFileName().toStdString();
-        presetJson["path"] = presetFiles[index].getFullPathName().toStdString();
-        presetJson["rmsDbfs"] = rmsDbfs;
-        presetJson["peakDbfs"] = peakDbfs;
-        presetJson["realtimeFactor"] = rendered.realtimeFactor;
-        presets.push_back(presetJson);
+        const double deltaVsInputDb = outputLufs - inputLufs;
+        const double recommendedTrimDb = targetOutputLufs - outputLufs;
+
+        sumLufs += outputLufs;
+        sumRecommendedTrimDb += recommendedTrimDb;
+        sumRealtimeFactor += rendered.realtimeFactor;
+
+        PresetGainRow row;
+        row.variant = variants[index];
+        row.inputLufs = inputLufs;
+        row.outputLufs = outputLufs;
+        row.deltaVsInputDb = deltaVsInputDb;
+        row.targetOutputLufs = targetOutputLufs;
+        row.recommendedTrimDb = recommendedTrimDb;
+        row.outputPeakDbfs = peakDbfs;
+        row.outputRmsDbfs = outputRmsDbfs;
+        row.realtimeFactor = rendered.realtimeFactor;
+        rows.push_back(row);
+
+        nlohmann::json variantJson;
+        variantJson["id"] = variants[index].id;
+        variantJson["label"] = variants[index].label;
+        variantJson["source"] = variants[index].source;
+        variantJson["presetPath"] = variants[index].presetPath.value_or("");
+        variantJson["programIndex"] =
+            variants[index].programIndex ? nlohmann::json(*variants[index].programIndex)
+                                         : nlohmann::json();
+        variantJson["outputPeakDbfs"] = peakDbfs;
+        variantJson["outputRmsDbfs"] = outputRmsDbfs;
+        variantJson["outputLufs"] = outputLufs;
+        variantJson["deltaVsInputDb"] = deltaVsInputDb;
+        variantJson["recommendedTrimDb"] = recommendedTrimDb;
+        variantJson["realtimeFactor"] = rendered.realtimeFactor;
+        variantsJson.push_back(variantJson);
 
         if (writePerPresetAudio) {
             const auto presetOutput = artifactDir.getChildFile("presets")
                                         .getChildFile(std::to_string(index + 1) + "_" +
-                                                      sanitizeFileStem(presetFiles[index].getFileNameWithoutExtension()) +
+                                                      sanitizeFileStem(juce::String(variants[index].label)) +
                                                       ".wav");
             presetOutput.getParentDirectory().createDirectory();
             writeWav(rendered.output, rendered.sampleRate, presetOutput);
         }
     }
 
-    const double spreadDb = maxDb - minDb;
-    result.metrics["presetCount"] = static_cast<double>(presetFiles.size());
+    std::sort(rows.begin(), rows.end(), [](const PresetGainRow& a, const PresetGainRow& b) {
+        return a.recommendedTrimDb > b.recommendedTrimDb;
+    });
+
+    const double spreadDb = maxLufs - minLufs;
+    result.metrics["presetCount"] = static_cast<double>(rows.size());
     result.metrics["presetGainSpreadDb"] = spreadDb;
-    result.metrics["presetGainMinDbfs"] = minDb;
-    result.metrics["presetGainMaxDbfs"] = maxDb;
-    result.metrics["presetGainMeanDbfs"] = sumDb / static_cast<double>(presetFiles.size());
+    result.metrics["presetInputRmsDbfs"] = inputRmsDbfs;
+    result.metrics["presetInputLufs"] = inputLufs;
+    result.metrics["presetTargetLufs"] = targetOutputLufs;
+    result.metrics["presetGainMinLufs"] = minLufs;
+    result.metrics["presetGainMaxLufs"] = maxLufs;
+    result.metrics["presetGainMeanLufs"] = sumLufs / static_cast<double>(rows.size());
+    result.metrics["presetRecommendedTrimMeanDb"] =
+        sumRecommendedTrimDb / static_cast<double>(rows.size());
+    result.metrics["presetRealtimeFactorMean"] =
+        sumRealtimeFactor / static_cast<double>(rows.size());
 
     detail["spreadDb"] = spreadDb;
     detail["quietestPreset"] = minPreset;
     detail["loudestPreset"] = maxPreset;
-    detail["presets"] = presets;
+    detail["variants"] = variantsJson;
 
     const auto detailPath = artifactDir.getChildFile("preset_gain_summary.json");
     detailPath.replaceWithText(detail.dump(2));
     result.artifacts["presetGainSummary"] = detailPath.getFullPathName().toStdString();
+    writePresetGainTables(artifactDir, rows, result);
 }
 
 bool runPluginval(const std::optional<std::string>& pluginvalPath, const CaseSpec& caseSpec,
@@ -813,15 +1182,22 @@ CaseResult AnalyzerEngine::runCase(const CaseSpec& caseSpec,
         }
 
         auto request = buildRequest(caseSpec, seed);
-        auto render = RenderEngine::render(request);
-
         const auto artifactDir = juce::File(caseSpec.artifactsDir);
+        result.artifacts["reproCmd"] = artifactDir.getChildFile("repro.sh").getFullPathName().toStdString();
+        writeReproScript(caseSpec, result);
+
+        if (caseSpec.testType == "presetGain") {
+            runPresetGainSpread(caseSpec, request, result, seed);
+            applyThresholdChecks(result);
+            ensureFailureRecommendations(result);
+            return result;
+        }
+
+        auto render = RenderEngine::render(request);
         const auto outputPath = artifactDir.getChildFile("output.wav");
         writeWav(render.output, render.sampleRate, outputPath);
 
         result.artifacts["renderedAudio"] = outputPath.getFullPathName().toStdString();
-        result.artifacts["reproCmd"] = artifactDir.getChildFile("repro.sh").getFullPathName().toStdString();
-        writeReproScript(caseSpec, result);
 
         result.metrics["outputPeakDbfs"] = linearToDb(computePeak(render.output));
         result.metrics["outputRmsDbfs"] = linearToDb(computeRms(render.output));
@@ -1049,9 +1425,6 @@ CaseResult AnalyzerEngine::runCase(const CaseSpec& caseSpec,
             const auto state = RenderEngine::captureState(request);
             result.metrics["stateSizeBytes"] = static_cast<double>(state.getSize());
             result.metrics["validationPass"] = 1.0;
-
-        } else if (caseSpec.testType == "presetGain") {
-            runPresetGainSpread(caseSpec, request, result, seed);
 
         } else {
             result.status = "failed";
