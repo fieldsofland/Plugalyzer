@@ -1,0 +1,148 @@
+{
+  "schemaVersion": 1,
+  "name": "chorus80-analog-vibe",
+  "plugins": [
+    {
+      "id": "chorus80",
+      "path": "/abs/path/Chorus80.vst3",
+      "format": "vst3",
+      "adapter": "adapters/chorus80.chain.example.json"
+    }
+  ],
+  "matrix": {
+    "sampleRates": [48000, 96000],
+    "blockSizes": [64, 256],
+    "channels": ["stereo"]
+  },
+  "signals": [
+    { "id": "sine_1k", "type": "sine", "frequencyHz": 1000, "levelDbfs": -18, "durationSec": 6 },
+    { "id": "hf_sweep", "type": "logSweep", "startHz": 20, "endHz": 22000, "durationSec": 10, "levelDbfs": -18 },
+    { "id": "impulse", "type": "impulse", "durationSec": 2, "levelDbfs": 0 },
+    { "id": "silence", "type": "silence", "durationSec": 8 }
+  ],
+  "tests": [
+    { "id": "load_smoke", "type": "load", "plugin": "chorus80", "signal": "silence", "includeModuleIsolation": false },
+    {
+      "id": "alias_hf_nonlinear",
+      "type": "aliasing",
+      "plugin": "chorus80",
+      "signal": "hf_sweep",
+      "aliasToneCount": 12,
+      "aliasHarmonicsMax": 18,
+      "moduleAllowList": ["amp", "deskfx", "chorusBoost"]
+    },
+    {
+      "id": "eq_neutral_curve",
+      "type": "eqCurve",
+      "plugin": "chorus80",
+      "signal": "hf_sweep",
+      "moduleAllowList": ["eq"]
+    },
+    {
+      "id": "phase_mod_texture",
+      "type": "phaseGroupDelay",
+      "plugin": "chorus80",
+      "signal": "hf_sweep",
+      "moduleAllowList": ["micropitch", "chorusA", "chorusB", "bbd"]
+    },
+    {
+      "id": "thdn_nonlinear",
+      "type": "thdn",
+      "plugin": "chorus80",
+      "signal": "sine_1k",
+      "moduleAllowList": ["amp", "deskfx", "chorusBoost"]
+    },
+    {
+      "id": "imd_nonlinear",
+      "type": "imd",
+      "plugin": "chorus80",
+      "signal": "sine_1k",
+      "moduleAllowList": ["amp", "deskfx", "chorusBoost"]
+    },
+    {
+      "id": "sat_curve_nonlinear",
+      "type": "saturationFingerprint",
+      "plugin": "chorus80",
+      "signal": "sine_1k",
+      "moduleAllowList": ["amp", "deskfx", "chorusBoost"],
+      "saturationStartDbfs": -30.0,
+      "saturationEndDbfs": -3.0,
+      "saturationStepDb": 3.0,
+      "saturationFrequencyHz": 1000.0,
+      "saturationHarmonicMax": 10
+    },
+    {
+      "id": "abx_clean_vs_drive",
+      "type": "abx",
+      "plugin": "chorus80",
+      "signal": "sine_1k",
+      "includeModuleIsolation": false,
+      "abxProgramA": 5,
+      "abxProgramB": 28,
+      "abxLabelA": "Clean Program",
+      "abxLabelB": "Driven Program",
+      "abxTrials": 16,
+      "abxUseSineInput": true,
+      "abxFrequencyHz": 900.0,
+      "abxDurationSec": 3.0
+    },
+    {
+      "id": "zipper_modulation",
+      "type": "automationZipper",
+      "plugin": "chorus80",
+      "signal": "sine_1k",
+      "moduleAllowList": ["micropitch", "chorusA", "chorusB"]
+    },
+    {
+      "id": "bypass_clicks",
+      "type": "bypassClickPop",
+      "plugin": "chorus80",
+      "signal": "sine_1k",
+      "moduleAllowList": ["amp", "deskfx", "chorusA", "chorusB", "bbd", "chorusBoost"]
+    },
+    {
+      "id": "preset_gain_alignment",
+      "type": "presetGain",
+      "plugin": "chorus80",
+      "signal": "sine_1k",
+      "includeModuleIsolation": false,
+      "presetSource": "programs",
+      "targetOutputDeltaDb": 1.0,
+      "measurementWarmupSec": 0.5,
+      "measurementDurationSec": 2.0
+    },
+    { "id": "determinism", "type": "determinism", "plugin": "chorus80", "signal": "sine_1k", "includeModuleIsolation": false },
+    { "id": "noise_floor", "type": "noiseDc", "plugin": "chorus80", "signal": "silence", "includeModuleIsolation": false },
+    { "id": "latency", "type": "latency", "plugin": "chorus80", "signal": "impulse", "includeModuleIsolation": false },
+    { "id": "state_roundtrip", "type": "stateRoundtrip", "plugin": "chorus80", "signal": "sine_1k", "includeModuleIsolation": false },
+    { "id": "perf", "type": "perfStress", "plugin": "chorus80", "signal": "sine_1k", "includeModuleIsolation": false }
+  ],
+  "thresholdProfiles": {
+    "default": {
+      "aliasingRatioDbMax": -55,
+      "abxLoudnessDeltaDbMax": 0.2,
+      "eqMaxErrorDb": 6.0,
+      "eqRmsErrorDb": 2.0,
+      "phaseDeviationDegMax": 45.0,
+      "thdnDbMax": -12.0,
+      "imdDbMax": -28.0,
+      "saturationWorstThdDbMax": 8.0,
+      "saturationOddEvenImbalanceDbMax": 18.0,
+      "presetGainSpreadDbMax": 3.0,
+      "zipperArtifactDbMax": -60,
+      "bypassClickPeakDbfsMax": -55,
+      "noiseFloorDbfsMax": -85,
+      "latencyErrorSamplesMax": 32,
+      "determinismResidualDbfsMax": -110,
+      "minRealtimeFactor": 1.0
+    }
+  },
+  "baseline": {
+    "strict": false,
+    "metricTolerance": 0.5
+  },
+  "pluginval": {
+    "required": false,
+    "strictness": 5
+  }
+}

@@ -79,8 +79,10 @@ vst-test run --suite suites/dreamrack.json --out-dir .vst-test/runs --jobs 4 --j
 ### Supported Test Types (v1)
 
 - `load`
+- `abx`
 - `determinism`
 - `aliasing`
+- `saturationFingerprint`
 - `eqCurve`
 - `phaseGroupDelay`
 - `thdn`
@@ -93,6 +95,30 @@ vst-test run --suite suites/dreamrack.json --out-dir .vst-test/runs --jobs 4 --j
 - `perfStress`
 - `validate`
 - `presetGain`
+
+### Chorus80 Strategy Suites
+
+Prebuilt examples for Chorus80-style chain plugins live under `suites/examples/`:
+
+- `chorus80.release-gate.example.json`: lifecycle, determinism, latency, noise, state, and perf checks.
+- `chorus80.nonlinear-scan.example.json`: foldback aliasing scan + THD/IMD + saturation fingerprint + bypass pop checks for nonlinear modules.
+- `chorus80.preset-loudness.example.json`: perceived loudness spread across presets (+1 dB target) with trim plan artifacts.
+- `chorus80.analog-vibe.example.json`: combined full analog-vibe battery (nonlinear, modulation, preset, and platform checks).
+
+Run one directly after setting your plugin path:
+
+```bash
+vst-test run --suite suites/examples/chorus80.analog-vibe.example.json --out-dir .vst-test/runs --json
+```
+
+Detailed iteration playbook (plugin + harness improvements):
+
+- `docs/chorus80-test-iteration.md`
+
+Per-test adapter filtering keys:
+
+- `moduleAllowList`: run only selected adapter-isolated modules for that test
+- `moduleDenyList`: exclude selected modules for that test
 
 ### Minimal Suite Example
 
@@ -177,6 +203,59 @@ Preset switching sources for `presetGain`:
 - `presetSource="auto"`: choose files first, then parameter mode, then program mode
 
 By default, `presetGain` uses a sine input and computes loudness alignment against `input + targetOutputDeltaDb` (default `+1.0 dB`).
+
+Trim writer artifacts:
+
+- `preset_gain_trim_plan.json` (machine-readable)
+- `apply_chorus80_master_output_trims.py` (helper script for patching `PresetManager.cpp` master output lines)
+
+### ABX Prep Example
+
+Use `abx` to generate a loudness-matched blind listening pack.
+
+```json
+{
+  "id": "abx_amp",
+  "type": "abx",
+  "plugin": "myplugin",
+  "signal": "sine_1k",
+  "abxTrials": 12,
+  "abxUseSineInput": true,
+  "abxFrequencyHz": 900.0,
+  "abxDurationSec": 3.0
+}
+```
+
+Artifacts:
+
+- `abx_A.wav`, `abx_B.wav`
+- `abx_trials_blind.csv`
+- `abx_trials_answers.csv`
+- `abx_instructions.md`
+
+### Saturation Fingerprint Example
+
+Use `saturationFingerprint` to profile harmonic growth over input level.
+
+```json
+{
+  "id": "sat_amp",
+  "type": "saturationFingerprint",
+  "plugin": "myplugin",
+  "signal": "sine_1k",
+  "saturationStartDbfs": -30.0,
+  "saturationEndDbfs": -6.0,
+  "saturationStepDb": 3.0,
+  "saturationFrequencyHz": 1000.0,
+  "saturationHarmonicMax": 10
+}
+```
+
+Artifacts:
+
+- `saturation_fingerprint.json`
+- `saturation_fingerprint.csv`
+- `saturation_fingerprint.md`
 
 ## Chain Adapter Example
 

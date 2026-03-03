@@ -1,0 +1,63 @@
+{
+  "schemaVersion": 1,
+  "name": "chorus80-preset-loudness",
+  "plugins": [
+    {
+      "id": "chorus80",
+      "path": "/abs/path/Chorus80.vst3",
+      "format": "vst3",
+      "adapter": "adapters/chorus80.chain.example.json"
+    }
+  ],
+  "matrix": {
+    "sampleRates": [48000],
+    "blockSizes": [256],
+    "channels": ["stereo"]
+  },
+  "signals": [
+    { "id": "sine_1k", "type": "sine", "frequencyHz": 1000, "levelDbfs": -18, "durationSec": 5 }
+  ],
+  "tests": [
+    {
+      "id": "preset_gain_programs",
+      "type": "presetGain",
+      "plugin": "chorus80",
+      "signal": "sine_1k",
+      "includeModuleIsolation": false,
+      "presetSource": "programs",
+      "programLimit": 64,
+      "targetOutputDeltaDb": 1.0,
+      "measurementWarmupSec": 0.5,
+      "measurementDurationSec": 2.0
+    },
+    {
+      "id": "abx_program_pair",
+      "type": "abx",
+      "plugin": "chorus80",
+      "signal": "sine_1k",
+      "includeModuleIsolation": false,
+      "abxProgramA": 0,
+      "abxProgramB": 1,
+      "abxLabelA": "Preset A",
+      "abxLabelB": "Preset B",
+      "abxTrials": 16,
+      "abxUseSineInput": true,
+      "abxFrequencyHz": 900.0,
+      "abxDurationSec": 3.0
+    }
+  ],
+  "thresholdProfiles": {
+    "default": {
+      "presetGainSpreadDbMax": 2.0,
+      "abxLoudnessDeltaDbMax": 0.2
+    }
+  },
+  "baseline": {
+    "strict": false,
+    "metricTolerance": 0.5
+  },
+  "pluginval": {
+    "required": false,
+    "strictness": 5
+  }
+}

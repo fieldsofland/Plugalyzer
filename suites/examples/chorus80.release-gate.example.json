@@ -1,0 +1,48 @@
+{
+  "schemaVersion": 1,
+  "name": "chorus80-release-gate",
+  "plugins": [
+    {
+      "id": "chorus80",
+      "path": "/abs/path/Chorus80.vst3",
+      "format": "vst3",
+      "adapter": "adapters/chorus80.chain.example.json"
+    }
+  ],
+  "matrix": {
+    "sampleRates": [44100, 48000, 96000],
+    "blockSizes": [64, 256],
+    "channels": ["stereo"]
+  },
+  "signals": [
+    { "id": "sine_1k", "type": "sine", "frequencyHz": 1000, "levelDbfs": -18, "durationSec": 6 },
+    { "id": "impulse", "type": "impulse", "durationSec": 2, "levelDbfs": 0 },
+    { "id": "silence", "type": "silence", "durationSec": 8 }
+  ],
+  "tests": [
+    { "id": "load", "type": "load", "plugin": "chorus80", "signal": "silence", "includeModuleIsolation": false },
+    { "id": "validate", "type": "validate", "plugin": "chorus80", "signal": "silence", "includeModuleIsolation": false },
+    { "id": "determinism", "type": "determinism", "plugin": "chorus80", "signal": "sine_1k", "includeModuleIsolation": false },
+    { "id": "noise_dc", "type": "noiseDc", "plugin": "chorus80", "signal": "silence", "includeModuleIsolation": false },
+    { "id": "latency", "type": "latency", "plugin": "chorus80", "signal": "impulse", "includeModuleIsolation": false },
+    { "id": "state", "type": "stateRoundtrip", "plugin": "chorus80", "signal": "sine_1k", "includeModuleIsolation": false },
+    { "id": "perf", "type": "perfStress", "plugin": "chorus80", "signal": "sine_1k", "includeModuleIsolation": false }
+  ],
+  "thresholdProfiles": {
+    "default": {
+      "determinismResidualDbfsMax": -110.0,
+      "noiseFloorDbfsMax": -88.0,
+      "latencyErrorSamplesMax": 32.0,
+      "minRealtimeFactor": 1.0,
+      "maxMemoryDriftMb": 16.0
+    }
+  },
+  "baseline": {
+    "strict": false,
+    "metricTolerance": 0.5
+  },
+  "pluginval": {
+    "required": false,
+    "strictness": 5
+  }
+}

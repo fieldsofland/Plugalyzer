@@ -1,0 +1,85 @@
+{
+  "schemaVersion": 1,
+  "name": "chorus80-nonlinear-scan",
+  "plugins": [
+    {
+      "id": "chorus80",
+      "path": "/abs/path/Chorus80.vst3",
+      "format": "vst3",
+      "adapter": "adapters/chorus80.chain.example.json"
+    }
+  ],
+  "matrix": {
+    "sampleRates": [48000, 96000],
+    "blockSizes": [256],
+    "channels": ["stereo"]
+  },
+  "signals": [
+    { "id": "sine_1k", "type": "sine", "frequencyHz": 1000, "levelDbfs": -18, "durationSec": 8 },
+    { "id": "hf_sweep", "type": "logSweep", "startHz": 20, "endHz": 22000, "durationSec": 10, "levelDbfs": -18 }
+  ],
+  "tests": [
+    {
+      "id": "alias_nonlinear",
+      "type": "aliasing",
+      "plugin": "chorus80",
+      "signal": "hf_sweep",
+      "moduleAllowList": ["amp", "deskfx", "chorusBoost"],
+      "aliasToneCount": 14,
+      "aliasHarmonicsMax": 20,
+      "aliasStartNyquistRatio": 0.60,
+      "aliasEndNyquistRatio": 0.98
+    },
+    {
+      "id": "thdn_nonlinear",
+      "type": "thdn",
+      "plugin": "chorus80",
+      "signal": "sine_1k",
+      "moduleAllowList": ["amp", "deskfx", "chorusBoost"]
+    },
+    {
+      "id": "imd_nonlinear",
+      "type": "imd",
+      "plugin": "chorus80",
+      "signal": "sine_1k",
+      "moduleAllowList": ["amp", "deskfx", "chorusBoost"]
+    },
+    {
+      "id": "sat_fingerprint",
+      "type": "saturationFingerprint",
+      "plugin": "chorus80",
+      "signal": "sine_1k",
+      "moduleAllowList": ["amp", "deskfx", "chorusBoost"],
+      "saturationStartDbfs": -36.0,
+      "saturationEndDbfs": -3.0,
+      "saturationStepDb": 3.0,
+      "saturationFrequencyHz": 1000.0,
+      "saturationHarmonicMax": 12
+    },
+    {
+      "id": "bypass_pops_nonlinear",
+      "type": "bypassClickPop",
+      "plugin": "chorus80",
+      "signal": "sine_1k",
+      "moduleAllowList": ["amp", "deskfx", "chorusBoost"]
+    }
+  ],
+  "thresholdProfiles": {
+    "default": {
+      "aliasingRatioDbMax": -60.0,
+      "thdnDbMax": -12.0,
+      "imdDbMax": -30.0,
+      "saturationWorstThdDbMax": 8.0,
+      "saturationOddEvenImbalanceDbMax": 18.0,
+      "bypassClickPeakDbfsMax": -55.0
+    }
+  },
+  "baseline": {
+    "strict": false,
+    "metricTolerance": 0.5
+  },
+  "pluginval": {
+    "required": false,
+    "strictness": 5
+  }
+}

@@ -28,6 +28,15 @@ vst-test baseline approve --suite <name> --run-id <run-id>
 vst-test report --results <results.json>
 ```
 
+## Chorus80 suite shortcuts
+
+Use these suite templates when targeting Chorus80-like chain plugins:
+
+- `suites/examples/chorus80.release-gate.example.json`
+- `suites/examples/chorus80.nonlinear-scan.example.json`
+- `suites/examples/chorus80.preset-loudness.example.json`
+- `suites/examples/chorus80.analog-vibe.example.json`
+
 ## Standard workflow
 
 1. Validate plugin path and inspect parameters.
@@ -64,6 +73,18 @@ When `testType=aliasing`, use:
 - `metrics.aliasingRatioDb`: worst foldback ratio from high-frequency scan
 - `artifacts.aliasingScan`: per-tone foldback scan details
 
+When `testType=abx`, use:
+
+- `metrics.abxLoudnessDeltaDb`: loudness-match quality between A and B
+- `artifacts.abxTrialsBlind` / `artifacts.abxTrialsAnswers`: listening/evaluation sheets
+- `artifacts.abxInstructions`: runbook for manual ABX session
+
+When `testType=saturationFingerprint`, use:
+
+- `metrics.saturationWorstThdDb`: worst THD point across input sweep
+- `metrics.saturationOddEvenImbalanceDb`: mean absolute odd/even balance deviation
+- `artifacts.saturationFingerprintCsv`: curve data for plotting
+
 When `testType=presetGain`, use:
 
 - `metrics.presetGainSpreadDb`: max-min output loudness spread (LUFS) across presets
@@ -71,6 +92,8 @@ When `testType=presetGain`, use:
 - `artifacts.presetGainSummary`: per-variant loudness and trim recommendations
 - `artifacts.presetGainAdjustmentsCsv`: spreadsheet-friendly gain adjustment table
 - `artifacts.presetGainAdjustmentsMd`: readable Markdown adjustment table
+- `artifacts.presetGainTrimPlan`: machine-readable trim plan
+- `artifacts.presetGainTrimScript`: helper script to apply Chorus80 master output trims
 
 ## Exit codes
 

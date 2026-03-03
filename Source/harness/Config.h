@@ -58,6 +58,7 @@ struct SignalDefinition {
 
 struct ThresholdProfile {
     std::optional<double> aliasingRatioDbMax;
+    std::optional<double> abxLoudnessDeltaDbMax;
     std::optional<double> eqMaxErrorDb;
     std::optional<double> eqRmsErrorDb;
     std::optional<double> noiseFloorDbfsMax;
@@ -72,6 +73,8 @@ struct ThresholdProfile {
     std::optional<double> maxMemoryDriftMb;
     std::optional<double> baselineMetricDeltaMax;
     std::optional<double> presetGainSpreadDbMax;
+    std::optional<double> saturationWorstThdDbMax;
+    std::optional<double> saturationOddEvenImbalanceDbMax;
 };
 
 struct TestDefinition {

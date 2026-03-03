@@ -4,6 +4,7 @@
 
 #include <juce_core/juce_core.h>
 #include <map>
+#include <set>
 #include <stdexcept>
 
 namespace vstest {
@@ -44,6 +45,7 @@ ThresholdProfile parseThresholdProfile(const nlohmann::json& j) {
     };
 
     setOptional("aliasingRatioDbMax", p.aliasingRatioDbMax);
+    setOptional("abxLoudnessDeltaDbMax", p.abxLoudnessDeltaDbMax);
     setOptional("eqMaxErrorDb", p.eqMaxErrorDb);
     setOptional("eqRmsErrorDb", p.eqRmsErrorDb);
     setOptional("noiseFloorDbfsMax", p.noiseFloorDbfsMax);
@@ -58,6 +60,8 @@ ThresholdProfile parseThresholdProfile(const nlohmann::json& j) {
     setOptional("maxMemoryDriftMb", p.maxMemoryDriftMb);
     setOptional("baselineMetricDeltaMax", p.baselineMetricDeltaMax);
     setOptional("presetGainSpreadDbMax", p.presetGainSpreadDbMax);
+    setOptional("saturationWorstThdDbMax", p.saturationWorstThdDbMax);
+    setOptional("saturationOddEvenImbalanceDbMax", p.saturationOddEvenImbalanceDbMax);
 
     return p;
 }
@@ -105,6 +109,7 @@ nlohmann::json thresholdToJson(const ThresholdProfile& p) {
     };
 
     setOptional("aliasingRatioDbMax", p.aliasingRatioDbMax);
+    setOptional("abxLoudnessDeltaDbMax", p.abxLoudnessDeltaDbMax);
     setOptional("eqMaxErrorDb", p.eqMaxErrorDb);
     setOptional("eqRmsErrorDb", p.eqRmsErrorDb);
     setOptional("noiseFloorDbfsMax", p.noiseFloorDbfsMax);
@@ -119,6 +124,8 @@ nlohmann::json thresholdToJson(const ThresholdProfile& p) {
     setOptional("maxMemoryDriftMb", p.maxMemoryDriftMb);
     setOptional("baselineMetricDeltaMax", p.baselineMetricDeltaMax);
     setOptional("presetGainSpreadDbMax", p.presetGainSpreadDbMax);
+    setOptional("saturationWorstThdDbMax", p.saturationWorstThdDbMax);
+    setOptional("saturationOddEvenImbalanceDbMax", p.saturationOddEvenImbalanceDbMax);
 
     return j;
 }
@@ -453,6 +460,50 @@ std::vector<CaseSpec> expandCases(const SuiteConfig& suite, const std::string& s
 
             if (test.includeModuleIsolation && !adapterIt->second.modeVariants.empty()) {
                 modeVariants = adapterIt->second.modeVariants;
+            }
+        }
+
+        std::set<std::string> moduleAllowList;
+        if (test.extra.contains("moduleAllowList") && test.extra["moduleAllowList"].is_array()) {
+            for (const auto& module : test.extra["moduleAllowList"]) {
+                if (module.is_string()) {
+                    moduleAllowList.insert(module.get<std::string>());
+                }
+            }
+        }
+
+        std::set<std::string> moduleDenyList;
+        if (test.extra.contains("moduleDenyList") && test.extra["moduleDenyList"].is_array()) {
+            for (const auto& module : test.extra["moduleDenyList"]) {
+                if (module.is_string()) {
+                    moduleDenyList.insert(module.get<std::string>());
+                }
+            }
+        }
+
+        if (!moduleAllowList.empty() || !moduleDenyList.empty()) {
+            std::vector<AdapterIsolation> filteredModules;
+            for (const auto& module : moduleIsolation) {
+                if (module.module.empty()) {
+                    filteredModules.push_back(module);
+                    continue;
+                }
+
+                if (!moduleAllowList.empty() && !moduleAllowList.contains(module.module)) {
+                    continue;
+                }
+
+                if (moduleDenyList.contains(module.module)) {
+                    continue;
+                }
+
+                filteredModules.push_back(module);
+            }
+
+            moduleIsolation = filteredModules;
+            if (moduleIsolation.empty()) {
+                throw std::runtime_error("No module isolation entries remain after moduleAllowList/moduleDenyList filtering for test '" +
+                                         test.id + "'");
             }
         }
 

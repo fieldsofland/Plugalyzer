@@ -1,0 +1,139 @@
+{
+  "schemaVersion": 1,
+  "pluginId": "chorus80",
+  "globalInit": [
+    { "param": "Global Bypass", "value": "Off" },
+    { "param": "Bypass", "value": "Off" },
+    { "param": "Master Output", "value": "0.0" },
+    { "param": "Global Auto-Gain", "value": "On" }
+  ],
+  "moduleIsolation": [
+    {
+      "module": "eq",
+      "set": [
+        { "param": "EQ Bypass", "value": "Off" },
+        { "param": "Comp Bypass", "value": "On" },
+        { "param": "Micropitch Bypass", "value": "On" },
+        { "param": "Chorus A Bypass", "value": "On" },
+        { "param": "Chorus B Bypass", "value": "On" },
+        { "param": "Amp Bypass", "value": "On" },
+        { "param": "Desk FX Bypass", "value": "On" },
+        { "param": "BBD Bypass", "value": "On" },
+        { "param": "Chorus Boost Bypass", "value": "On" }
+      ]
+    },
+    {
+      "module": "comp",
+      "set": [
+        { "param": "EQ Bypass", "value": "On" },
+        { "param": "Comp Bypass", "value": "Off" },
+        { "param": "Micropitch Bypass", "value": "On" },
+        { "param": "Chorus A Bypass", "value": "On" },
+        { "param": "Chorus B Bypass", "value": "On" },
+        { "param": "Amp Bypass", "value": "On" },
+        { "param": "Desk FX Bypass", "value": "On" },
+        { "param": "BBD Bypass", "value": "On" },
+        { "param": "Chorus Boost Bypass", "value": "On" }
+      ]
+    },
+    {
+      "module": "micropitch",
+      "set": [
+        { "param": "EQ Bypass", "value": "On" },
+        { "param": "Comp Bypass", "value": "On" },
+        { "param": "Micropitch Bypass", "value": "Off" },
+        { "param": "Chorus A Bypass", "value": "On" },
+        { "param": "Chorus B Bypass", "value": "On" },
+        { "param": "Amp Bypass", "value": "On" },
+        { "param": "Desk FX Bypass", "value": "On" },
+        { "param": "BBD Bypass", "value": "On" },
+        { "param": "Chorus Boost Bypass", "value": "On" }
+      ]
+    },
+    {
+      "module": "chorusA",
+      "set": [
+        { "param": "EQ Bypass", "value": "On" },
+        { "param": "Comp Bypass", "value": "On" },
+        { "param": "Micropitch Bypass", "value": "On" },
+        { "param": "Chorus A Bypass", "value": "Off" },
+        { "param": "Chorus B Bypass", "value": "On" },
+        { "param": "Amp Bypass", "value": "On" },
+        { "param": "Desk FX Bypass", "value": "On" },
+        { "param": "BBD Bypass", "value": "On" },
+        { "param": "Chorus Boost Bypass", "value": "On" }
+      ]
+    },
+    {
+      "module": "chorusB",
+      "set": [
+        { "param": "EQ Bypass", "value": "On" },
+        { "param": "Comp Bypass", "value": "On" },
+        { "param": "Micropitch Bypass", "value": "On" },
+        { "param": "Chorus A Bypass", "value": "On" },
+        { "param": "Chorus B Bypass", "value": "Off" },
+        { "param": "Amp Bypass", "value": "On" },
+        { "param": "Desk FX Bypass", "value": "On" },
+        { "param": "BBD Bypass", "value": "On" },
+        { "param": "Chorus Boost Bypass", "value": "On" }
+      ]
+    },
+    {
+      "module": "amp",
+      "set": [
+        { "param": "EQ Bypass", "value": "On" },
+        { "param": "Comp Bypass", "value": "On" },
+        { "param": "Micropitch Bypass", "value": "On" },
+        { "param": "Chorus A Bypass", "value": "On" },
+        { "param": "Chorus B Bypass", "value": "On" },
+        { "param": "Amp Bypass", "value": "Off" },
+        { "param": "Desk FX Bypass", "value": "On" },
+        { "param": "BBD Bypass", "value": "On" },
+        { "param": "Chorus Boost Bypass", "value": "On" }
+      ]
+    },
+    {
+      "module": "deskfx",
+      "set": [
+        { "param": "EQ Bypass", "value": "On" },
+        { "param": "Comp Bypass", "value": "On" },
+        { "param": "Micropitch Bypass", "value": "On" },
+        { "param": "Chorus A Bypass", "value": "On" },
+        { "param": "Chorus B Bypass", "value": "On" },
+        { "param": "Amp Bypass", "value": "On" },
+        { "param": "Desk FX Bypass", "value": "Off" },
+        { "param": "BBD Bypass", "value": "On" },
+        { "param": "Chorus Boost Bypass", "value": "On" }
+      ]
+    },
+    {
+      "module": "bbd",
+      "set": [
+        { "param": "EQ Bypass", "value": "On" },
+        { "param": "Comp Bypass", "value": "On" },
+        { "param": "Micropitch Bypass", "value": "On" },
+        { "param": "Chorus A Bypass", "value": "On" },
+        { "param": "Chorus B Bypass", "value": "On" },
+        { "param": "Amp Bypass", "value": "On" },
+        { "param": "Desk FX Bypass", "value": "On" },
+        { "param": "BBD Bypass", "value": "Off" },
+        { "param": "Chorus Boost Bypass", "value": "On" }
+      ]
+    },
+    {
+      "module": "chorusBoost",
+      "set": [
+        { "param": "EQ Bypass", "value": "On" },
+        { "param": "Comp Bypass", "value": "On" },
+        { "param": "Micropitch Bypass", "value": "On" },
+        { "param": "Chorus A Bypass", "value": "On" },
+        { "param": "Chorus B Bypass", "value": "On" },
+        { "param": "Amp Bypass", "value": "On" },
+        { "param": "Desk FX Bypass", "value": "On" },
+        { "param": "BBD Bypass", "value": "On" },
+        { "param": "Chorus Boost Bypass", "value": "Off" }
+      ]
+    }
+  ],
+  "modeVariants": []
+}

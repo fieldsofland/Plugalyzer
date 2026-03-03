@@ -14,6 +14,7 @@
 #include <iomanip>
 #include <limits>
 #include <numeric>
+#include <random>
 #include <sstream>
 #include <set>
 #include <stdexcept>
@@ -303,6 +304,9 @@ std::string recommendationForMetric(const std::string& metric) {
     if (metric == "aliasingRatioDb") {
         return "Reduce foldback by moving nonlinear stages to higher oversampling and adding steeper post-nonlinearity low-pass filtering.";
     }
+    if (metric == "abxLoudnessDeltaDb") {
+        return "Match A/B loudness more tightly (within ~0.2 dB) before subjective comparison to avoid level-bias in listening decisions.";
+    }
     if (metric == "eqMaxErrorDb" || metric == "eqRmsErrorDb") {
         return "Check EQ coefficient design, sample-rate compensation, and gain/Q mapping against expected transfer curves.";
     }
@@ -338,6 +342,12 @@ std::string recommendationForMetric(const std::string& metric) {
     }
     if (metric == "presetGainSpreadDb") {
         return "Align preset output trims/makeup gain to a loudness target so preset switching stays level-matched.";
+    }
+    if (metric == "saturationWorstThdDb") {
+        return "Tune nonlinearity drive and tone shaping so distortion grows musically across level without sudden harsh onset.";
+    }
+    if (metric == "saturationOddEvenImbalanceDb") {
+        return "Adjust transfer asymmetry and bias to reach the desired odd/even harmonic balance for the intended analog character.";
     }
 
     return "";
@@ -375,6 +385,7 @@ void checkLowerBound(CaseResult& result, const std::string& metric, const std::s
 
 void applyThresholdChecks(CaseResult& result) {
     checkUpperBound(result, "aliasingRatioDb", "aliasingRatioDbMax");
+    checkUpperBound(result, "abxLoudnessDeltaDb", "abxLoudnessDeltaDbMax");
     checkUpperBound(result, "eqMaxErrorDb", "eqMaxErrorDb");
     checkUpperBound(result, "eqRmsErrorDb", "eqRmsErrorDb");
     checkUpperBound(result, "noiseFloorDbfs", "noiseFloorDbfsMax");
@@ -387,6 +398,8 @@ void applyThresholdChecks(CaseResult& result) {
     checkUpperBound(result, "zipperArtifactDb", "zipperArtifactDbMax");
     checkUpperBound(result, "memoryDriftMb", "maxMemoryDriftMb");
     checkUpperBound(result, "presetGainSpreadDb", "presetGainSpreadDbMax");
+    checkUpperBound(result, "saturationWorstThdDb", "saturationWorstThdDbMax");
+    checkUpperBound(result, "saturationOddEvenImbalanceDb", "saturationOddEvenImbalanceDbMax");
 
     checkLowerBound(result, "realtimeFactor", "minRealtimeFactor");
 }
@@ -605,6 +618,347 @@ void runAliasingFoldbackScan(const CaseSpec& caseSpec, const RenderRequest& base
     const auto detailPath = artifactDir.getChildFile("aliasing_scan.json");
     detailPath.replaceWithText(details.dump(2));
     result.artifacts["aliasingScan"] = detailPath.getFullPathName().toStdString();
+}
+
+juce::AudioBuffer<float> copyWithGain(const juce::AudioBuffer<float>& source, double gainDb) {
+    juce::AudioBuffer<float> copy;
+    copy.makeCopyOf(source);
+    copy.applyGain(juce::Decibels::decibelsToGain(static_cast<float>(gainDb)));
+    return copy;
+}
+
+std::string formatDb(double value);
+std::string csvEscape(const std::string& value);
+
+std::vector<double> makeLevelSeries(double startDbfs, double endDbfs, double stepDb) {
+    if (stepDb <= 0.0) {
+        throw std::runtime_error("saturationStepDb must be > 0");
+    }
+
+    std::vector<double> levels;
+    const int maxPoints = 256;
+    if (startDbfs <= endDbfs) {
+        for (double v = startDbfs; v <= endDbfs + 1e-9; v += stepDb) {
+            levels.push_back(v);
+            if (static_cast<int>(levels.size()) >= maxPoints) {
+                break;
+            }
+        }
+    } else {
+        for (double v = startDbfs; v >= endDbfs - 1e-9; v -= stepDb) {
+            levels.push_back(v);
+            if (static_cast<int>(levels.size()) >= maxPoints) {
+                break;
+            }
+        }
+    }
+
+    if (levels.empty()) {
+        levels.push_back(startDbfs);
+    }
+    return levels;
+}
+
+void runAbxPreparation(const CaseSpec& caseSpec, const RenderRequest& baseRequest, CaseResult& result,
+                       unsigned int seed) {
+    const int trialCount = std::clamp(caseSpec.extra.value("abxTrials", 12), 2, 200);
+    const bool writeTrialAudio = caseSpec.extra.value("abxWriteTrialAudio", true);
+    const bool keepCaseParameterSets = caseSpec.extra.value("abxKeepCaseParameterSets", true);
+    const bool useSineInput = caseSpec.extra.value("abxUseSineInput", false);
+    const bool hasProgramPair =
+        caseSpec.extra.contains("abxProgramA") && caseSpec.extra.contains("abxProgramB");
+
+    SignalDefinition signal = caseSpec.signal;
+    if (useSineInput) {
+        signal.type = "sine";
+        signal.frequencyHz = caseSpec.extra.value("abxFrequencyHz", 1000.0);
+        signal.levelDbfs = caseSpec.extra.value("abxLevelDbfs", caseSpec.signal.levelDbfs);
+        signal.durationSec = caseSpec.extra.value("abxDurationSec", caseSpec.signal.durationSec);
+    }
+
+    auto analysisInput =
+        SignalGenerator::generate(signal, caseSpec.sampleRate, caseSpec.channels, seed + 991u);
+
+    juce::AudioBuffer<float> audioA;
+    juce::AudioBuffer<float> audioB;
+    std::string labelA = "A";
+    std::string labelB = "B";
+
+    if (hasProgramPair) {
+        RenderRequest reqA = baseRequest;
+        RenderRequest reqB = baseRequest;
+        reqA.input = analysisInput;
+        reqB.input = analysisInput;
+        reqA.programIndex = caseSpec.extra.value("abxProgramA", 0);
+        reqB.programIndex = caseSpec.extra.value("abxProgramB", 1);
+        reqA.presetPath.reset();
+        reqB.presetPath.reset();
+
+        if (!keepCaseParameterSets) {
+            reqA.parameterSets.clear();
+            reqB.parameterSets.clear();
+        }
+
+        auto renderedA = RenderEngine::render(reqA);
+        auto renderedB = RenderEngine::render(reqB);
+        audioA = renderedA.output;
+        audioB = renderedB.output;
+        labelA = caseSpec.extra.value("abxLabelA", "Program A");
+        labelB = caseSpec.extra.value("abxLabelB", "Program B");
+    } else {
+        RenderRequest wetReq = baseRequest;
+        wetReq.input = analysisInput;
+        if (!keepCaseParameterSets) {
+            wetReq.parameterSets.clear();
+        }
+        auto renderedWet = RenderEngine::render(wetReq);
+        audioA = analysisInput;
+        audioB = renderedWet.output;
+        labelA = caseSpec.extra.value("abxLabelA", "Dry");
+        labelB = caseSpec.extra.value("abxLabelB", "Wet");
+    }
+
+    const double warmupSec = std::max(0.0, caseSpec.extra.value("abxWarmupSec", 0.25));
+    const double measureSec = std::max(0.0, caseSpec.extra.value("abxMeasureSec", 0.0));
+
+    const int startSample = static_cast<int>(std::round(warmupSec * caseSpec.sampleRate));
+    const int maxWindowSamples = std::max(1, audioA.getNumSamples() - startSample);
+    const int requestedSamples =
+        (measureSec > 0.0)
+            ? std::clamp(static_cast<int>(std::round(measureSec * caseSpec.sampleRate)), 1,
+                         maxWindowSamples)
+            : maxWindowSamples;
+    const int windowA = std::clamp(requestedSamples, 1, std::max(1, audioA.getNumSamples() - startSample));
+    const int windowB = std::clamp(requestedSamples, 1, std::max(1, audioB.getNumSamples() - startSample));
+
+    const double lufsA =
+        computeIntegratedLufsUngated(audioA, caseSpec.sampleRate, startSample, windowA);
+    const double lufsBPre =
+        computeIntegratedLufsUngated(audioB, caseSpec.sampleRate, startSample, windowB);
+    const double gainToMatchDb = lufsA - lufsBPre;
+    auto audioBMatched = copyWithGain(audioB, gainToMatchDb);
+    const double lufsBPost =
+        computeIntegratedLufsUngated(audioBMatched, caseSpec.sampleRate, startSample, windowB);
+
+    const auto artifactDir = juce::File(caseSpec.artifactsDir);
+    const auto pathA = artifactDir.getChildFile("abx_A.wav");
+    const auto pathB = artifactDir.getChildFile("abx_B.wav");
+    writeWav(audioA, caseSpec.sampleRate, pathA);
+    writeWav(audioBMatched, caseSpec.sampleRate, pathB);
+
+    result.artifacts["abxA"] = pathA.getFullPathName().toStdString();
+    result.artifacts["abxB"] = pathB.getFullPathName().toStdString();
+
+    const auto blindCsvPath = artifactDir.getChildFile("abx_trials_blind.csv");
+    const auto answerCsvPath = artifactDir.getChildFile("abx_trials_answers.csv");
+    const auto instructionsPath = artifactDir.getChildFile("abx_instructions.md");
+    const auto trialDir = artifactDir.getChildFile("abx_trials");
+    trialDir.createDirectory();
+
+    std::mt19937 rng(seed + 4242u);
+    std::bernoulli_distribution pickB(0.5);
+
+    std::ostringstream blindCsv;
+    std::ostringstream answerCsv;
+    blindCsv << "trial,x_audio_file,notes\n";
+    answerCsv << "trial,answer\n";
+
+    for (int trial = 1; trial <= trialCount; ++trial) {
+        const bool isB = pickB(rng);
+        const auto trialName =
+            "X_" + juce::String(trial).paddedLeft('0', 2).toStdString() + ".wav";
+        const auto trialPath = trialDir.getChildFile(trialName);
+
+        if (writeTrialAudio) {
+            writeWav(isB ? audioBMatched : audioA, caseSpec.sampleRate, trialPath);
+        }
+
+        blindCsv << trial << "," << csvEscape("abx_trials/" + trialName) << ",\n";
+        answerCsv << trial << "," << (isB ? "B" : "A") << "\n";
+    }
+
+    blindCsvPath.replaceWithText(blindCsv.str());
+    answerCsvPath.replaceWithText(answerCsv.str());
+
+    std::ostringstream instructions;
+    instructions << "# ABX Listening Pack\n\n";
+    instructions << "- `A`: " << labelA << " (`abx_A.wav`)\n";
+    instructions << "- `B`: " << labelB << " (`abx_B.wav`, loudness-matched)\n";
+    instructions << "- Trials listed in `abx_trials_blind.csv`\n";
+    instructions << "- Answer key in `abx_trials_answers.csv` (keep hidden during evaluation)\n\n";
+    instructions << "Loudness alignment:\n";
+    instructions << "- A LUFS: " << formatDb(lufsA) << "\n";
+    instructions << "- B LUFS before match: " << formatDb(lufsBPre) << "\n";
+    instructions << "- B gain applied: " << formatDb(gainToMatchDb) << " dB\n";
+    instructions << "- B LUFS after match: " << formatDb(lufsBPost) << "\n";
+    instructionsPath.replaceWithText(instructions.str());
+
+    result.artifacts["abxTrialsBlind"] = blindCsvPath.getFullPathName().toStdString();
+    result.artifacts["abxTrialsAnswers"] = answerCsvPath.getFullPathName().toStdString();
+    result.artifacts["abxInstructions"] = instructionsPath.getFullPathName().toStdString();
+
+    result.metrics["abxTrialCount"] = static_cast<double>(trialCount);
+    result.metrics["abxLufsA"] = lufsA;
+    result.metrics["abxLufsBBeforeMatch"] = lufsBPre;
+    result.metrics["abxLufsBAfterMatch"] = lufsBPost;
+    result.metrics["abxGainAppliedDb"] = gainToMatchDb;
+    result.metrics["abxLoudnessDeltaDb"] = std::abs(lufsA - lufsBPost);
+}
+
+struct SaturationPoint {
+    double inputDbfs = 0.0;
+    double outputRmsDbfs = 0.0;
+    double outputPeakDbfs = 0.0;
+    double thdDb = 0.0;
+    double evenOddBalanceDb = 0.0;
+    double h2Db = 0.0;
+    double h3Db = 0.0;
+};
+
+void runSaturationFingerprint(const CaseSpec& caseSpec, const RenderRequest& baseRequest,
+                              CaseResult& result, unsigned int seed) {
+    const double startDbfs = caseSpec.extra.value("saturationStartDbfs", -36.0);
+    const double endDbfs = caseSpec.extra.value("saturationEndDbfs", -6.0);
+    const double stepDb = caseSpec.extra.value("saturationStepDb", 3.0);
+    const double frequencyHz = caseSpec.extra.value("saturationFrequencyHz", 1000.0);
+    const double durationSec =
+        std::max(1.0, caseSpec.extra.value("saturationDurationSec", caseSpec.signal.durationSec));
+    const int harmonicMax = std::clamp(caseSpec.extra.value("saturationHarmonicMax", 10), 2, 32);
+
+    const auto levels = makeLevelSeries(startDbfs, endDbfs, stepDb);
+    std::vector<SaturationPoint> points;
+    points.reserve(levels.size());
+
+    for (size_t index = 0; index < levels.size(); ++index) {
+        SignalDefinition testSignal;
+        testSignal.id = "sat_level_" + std::to_string(index);
+        testSignal.type = "sine";
+        testSignal.frequencyHz = frequencyHz;
+        testSignal.levelDbfs = levels[index];
+        testSignal.durationSec = durationSec;
+        testSignal.startHz = caseSpec.signal.startHz;
+        testSignal.endHz = caseSpec.signal.endHz;
+
+        RenderRequest request = baseRequest;
+        request.input = SignalGenerator::generate(testSignal, caseSpec.sampleRate, caseSpec.channels,
+                                                  seed + static_cast<unsigned int>(index + 1) * 313u);
+
+        const auto render = RenderEngine::render(request);
+        const auto spectrum = computeSpectrum(render.output, 0);
+        const int fundamentalBin = hzToBin(spectrum, caseSpec.sampleRate, frequencyHz);
+        const double fundamentalEnergy = energyAroundBin(spectrum, fundamentalBin, 1);
+
+        double harmonicEnergy = 0.0;
+        double evenEnergy = 0.0;
+        double oddEnergy = 0.0;
+        double h2Energy = 0.0;
+        double h3Energy = 0.0;
+        for (int harmonic = 2; harmonic <= harmonicMax; ++harmonic) {
+            const double harmonicHz = frequencyHz * static_cast<double>(harmonic);
+            if (harmonicHz >= (caseSpec.sampleRate * 0.5 * 0.999)) {
+                break;
+            }
+
+            const int harmonicBin = hzToBin(spectrum, caseSpec.sampleRate, harmonicHz);
+            const double energy = energyAroundBin(spectrum, harmonicBin, 1);
+            harmonicEnergy += energy;
+            if (harmonic % 2 == 0) {
+                evenEnergy += energy;
+            } else {
+                oddEnergy += energy;
+            }
+
+            if (harmonic == 2) {
+                h2Energy = energy;
+            } else if (harmonic == 3) {
+                h3Energy = energy;
+            }
+        }
+
+        SaturationPoint point;
+        point.inputDbfs = levels[index];
+        point.outputRmsDbfs = linearToDb(computeRms(render.output));
+        point.outputPeakDbfs = linearToDb(computePeak(render.output));
+        point.thdDb = 10.0 * std::log10((harmonicEnergy + 1e-30) / (fundamentalEnergy + 1e-30));
+        point.evenOddBalanceDb = 10.0 * std::log10((evenEnergy + 1e-30) / (oddEnergy + 1e-30));
+        point.h2Db = 10.0 * std::log10((h2Energy + 1e-30) / (fundamentalEnergy + 1e-30));
+        point.h3Db = 10.0 * std::log10((h3Energy + 1e-30) / (fundamentalEnergy + 1e-30));
+        points.push_back(point);
+    }
+
+    if (points.empty()) {
+        throw std::runtime_error("No saturation points generated");
+    }
+
+    const auto artifactDir = juce::File(caseSpec.artifactsDir);
+    const auto jsonPath = artifactDir.getChildFile("saturation_fingerprint.json");
+    const auto csvPath = artifactDir.getChildFile("saturation_fingerprint.csv");
+    const auto markdownPath = artifactDir.getChildFile("saturation_fingerprint.md");
+
+    nlohmann::json report;
+    report["method"] = "saturation_fingerprint_v1";
+    report["frequencyHz"] = frequencyHz;
+    report["durationSec"] = durationSec;
+    report["harmonicMax"] = harmonicMax;
+    report["levelsDbfs"] = levels;
+
+    double worstThdDb = -std::numeric_limits<double>::infinity();
+    double sumThdDb = 0.0;
+    double sumAbsOddEven = 0.0;
+    double maxOutputPeakDbfs = -std::numeric_limits<double>::infinity();
+
+    nlohmann::json pointsJson = nlohmann::json::array();
+    std::ostringstream csv;
+    csv << "input_dbfs,output_rms_dbfs,output_peak_dbfs,thd_db,even_odd_balance_db,h2_db,h3_db\n";
+
+    std::ostringstream markdown;
+    markdown << "# Saturation Fingerprint\n\n";
+    markdown << "| Input (dBFS) | Output RMS (dBFS) | Peak (dBFS) | THD (dB) | Even/Odd (dB) | H2/Fund (dB) | H3/Fund (dB) |\n";
+    markdown << "|---:|---:|---:|---:|---:|---:|---:|\n";
+
+    for (const auto& point : points) {
+        worstThdDb = std::max(worstThdDb, point.thdDb);
+        sumThdDb += point.thdDb;
+        sumAbsOddEven += std::abs(point.evenOddBalanceDb);
+        maxOutputPeakDbfs = std::max(maxOutputPeakDbfs, point.outputPeakDbfs);
+
+        nlohmann::json pointJson;
+        pointJson["inputDbfs"] = point.inputDbfs;
+        pointJson["outputRmsDbfs"] = point.outputRmsDbfs;
+        pointJson["outputPeakDbfs"] = point.outputPeakDbfs;
+        pointJson["thdDb"] = point.thdDb;
+        pointJson["evenOddBalanceDb"] = point.evenOddBalanceDb;
+        pointJson["h2Db"] = point.h2Db;
+        pointJson["h3Db"] = point.h3Db;
+        pointsJson.push_back(pointJson);
+
+        csv << formatDb(point.inputDbfs) << "," << formatDb(point.outputRmsDbfs) << ","
+            << formatDb(point.outputPeakDbfs) << "," << formatDb(point.thdDb) << ","
+            << formatDb(point.evenOddBalanceDb) << "," << formatDb(point.h2Db) << ","
+            << formatDb(point.h3Db) << "\n";
+
+        markdown << "| " << formatDb(point.inputDbfs) << " | " << formatDb(point.outputRmsDbfs)
+                 << " | " << formatDb(point.outputPeakDbfs) << " | " << formatDb(point.thdDb)
+                 << " | " << formatDb(point.evenOddBalanceDb) << " | " << formatDb(point.h2Db)
+                 << " | " << formatDb(point.h3Db) << " |\n";
+    }
+
+    report["points"] = pointsJson;
+    jsonPath.replaceWithText(report.dump(2));
+    csvPath.replaceWithText(csv.str());
+    markdownPath.replaceWithText(markdown.str());
+
+    result.artifacts["saturationFingerprintJson"] = jsonPath.getFullPathName().toStdString();
+    result.artifacts["saturationFingerprintCsv"] = csvPath.getFullPathName().toStdString();
+    result.artifacts["saturationFingerprintMd"] = markdownPath.getFullPathName().toStdString();
+
+    result.metrics["saturationInputPointCount"] = static_cast<double>(points.size());
+    result.metrics["saturationWorstThdDb"] = worstThdDb;
+    result.metrics["saturationMeanThdDb"] =
+        sumThdDb / static_cast<double>(points.size());
+    result.metrics["saturationOddEvenImbalanceDb"] =
+        sumAbsOddEven / static_cast<double>(points.size());
+    result.metrics["saturationMaxOutputPeakDbfs"] = maxOutputPeakDbfs;
 }
 
 std::string sanitizeFileStem(const juce::String& value) {
@@ -864,6 +1218,103 @@ void writePresetGainTables(const juce::File& artifactDir, const std::vector<Pres
         markdownPath.getFullPathName().toStdString();
 }
 
+void writePresetTrimPlan(const juce::File& artifactDir, const std::vector<PresetGainRow>& rows,
+                         const CaseSpec& caseSpec, CaseResult& result) {
+    const auto planPath = artifactDir.getChildFile("preset_gain_trim_plan.json");
+    nlohmann::json plan;
+    plan["schemaVersion"] = 1;
+    plan["targetParameter"] = caseSpec.extra.value("presetTrimParameter", "Master Output");
+    plan["recommendedTrimClampDb"] = {-12.0, 12.0};
+    plan["entries"] = nlohmann::json::array();
+
+    for (const auto& row : rows) {
+        nlohmann::json entry;
+        entry["preset"] = row.variant.label;
+        entry["source"] = row.variant.source;
+        entry["presetPath"] = row.variant.presetPath.value_or("");
+        entry["programIndex"] =
+            row.variant.programIndex ? nlohmann::json(*row.variant.programIndex) : nlohmann::json();
+        entry["recommendedTrimDb"] = row.recommendedTrimDb;
+        entry["targetOutputLufs"] = row.targetOutputLufs;
+        entry["currentOutputLufs"] = row.outputLufs;
+        plan["entries"].push_back(entry);
+    }
+
+    planPath.replaceWithText(plan.dump(2));
+    result.artifacts["presetGainTrimPlan"] = planPath.getFullPathName().toStdString();
+
+    const auto scriptPath = artifactDir.getChildFile("apply_chorus80_master_output_trims.py");
+    std::ostringstream script;
+    script << "#!/usr/bin/env python3\n";
+    script << "import argparse, json, pathlib, re\n\n";
+    script << "def clamp(v, lo, hi):\n";
+    script << "    return max(lo, min(hi, v))\n\n";
+    script << "def main():\n";
+    script << "    ap = argparse.ArgumentParser(description='Apply preset master output trims to Chorus80 PresetManager.cpp')\n";
+    script << "    ap.add_argument('--plan', default='" << planPath.getFileName().toStdString() << "')\n";
+    script << "    ap.add_argument('--source', required=True)\n";
+    script << "    ap.add_argument('--out', default='')\n";
+    script << "    args = ap.parse_args()\n\n";
+    script << "    plan_path = pathlib.Path(args.plan)\n";
+    script << "    if not plan_path.is_absolute():\n";
+    script << "        plan_path = pathlib.Path(__file__).resolve().parent / plan_path\n";
+    script << "    plan = json.loads(plan_path.read_text())\n";
+    script << "    trims = {e['preset']: float(e['recommendedTrimDb']) for e in plan.get('entries', [])}\n";
+    script << "    src_path = pathlib.Path(args.source)\n";
+    script << "    text = src_path.read_text()\n";
+    script << "    lines = text.splitlines()\n";
+    script << "    preset_re = re.compile(r'^\\s*//\\s*Preset\\s+\\d+:\\s*(.+?)\\s*$')\n";
+    script << "    mo_re = re.compile(r'(\\{\\s*ParamIDs::masterOutput\\s*,\\s*)([-+]?\\d+(?:\\.\\d+)?)f(\\s*\\},?)')\n";
+    script << "    i = 0\n";
+    script << "    changed = 0\n";
+    script << "    while i < len(lines):\n";
+    script << "        m = preset_re.match(lines[i])\n";
+    script << "        if not m:\n";
+    script << "            i += 1\n";
+    script << "            continue\n";
+    script << "        preset = m.group(1).strip()\n";
+    script << "        if preset not in trims:\n";
+    script << "            i += 1\n";
+    script << "            continue\n";
+    script << "        trim = trims[preset]\n";
+    script << "        j = i + 1\n";
+    script << "        while j < len(lines) and '{' not in lines[j]:\n";
+    script << "            j += 1\n";
+    script << "        if j >= len(lines):\n";
+    script << "            break\n";
+    script << "        k = j\n";
+    script << "        while k < len(lines) and '};' not in lines[k]:\n";
+    script << "            k += 1\n";
+    script << "        if k >= len(lines):\n";
+    script << "            break\n";
+    script << "        found = False\n";
+    script << "        for p in range(j, k + 1):\n";
+    script << "            mm = mo_re.search(lines[p])\n";
+    script << "            if mm:\n";
+    script << "                current = float(mm.group(2))\n";
+    script << "                new_v = clamp(current + trim, -12.0, 12.0)\n";
+    script << "                lines[p] = mo_re.sub(lambda m2: f\"{m2.group(1)}{new_v:.2f}f{m2.group(3)}\", lines[p])\n";
+    script << "                found = True\n";
+    script << "                changed += 1\n";
+    script << "                break\n";
+    script << "        if not found:\n";
+    script << "            new_v = clamp(trim, -12.0, 12.0)\n";
+    script << "            indent = '    '\n";
+    script << "            lines.insert(k, f\"{indent}{{ ParamIDs::masterOutput, {new_v:.2f}f }},\")\n";
+    script << "            changed += 1\n";
+    script << "            i = k + 1\n";
+    script << "            continue\n";
+    script << "        i = k + 1\n";
+    script << "    out_path = pathlib.Path(args.out) if args.out else src_path\n";
+    script << "    out_path.write_text('\\n'.join(lines) + '\\n')\n";
+    script << "    print(f'Updated presets: {changed}')\n\n";
+    script << "if __name__ == '__main__':\n";
+    script << "    main()\n";
+
+    scriptPath.replaceWithText(script.str());
+    result.artifacts["presetGainTrimScript"] = scriptPath.getFullPathName().toStdString();
+}
+
 void runPresetGainSpread(const CaseSpec& caseSpec, const RenderRequest& baseRequest, CaseResult& result,
                          unsigned int seed) {
     const auto variants = collectPresetVariants(caseSpec);
@@ -1041,19 +1492,15 @@ void runPresetGainSpread(const CaseSpec& caseSpec, const RenderRequest& baseRequ
     detailPath.replaceWithText(detail.dump(2));
     result.artifacts["presetGainSummary"] = detailPath.getFullPathName().toStdString();
     writePresetGainTables(artifactDir, rows, result);
+    writePresetTrimPlan(artifactDir, rows, caseSpec, result);
 }
 
 bool runPluginval(const std::optional<std::string>& pluginvalPath, const CaseSpec& caseSpec,
                   CaseResult& result) {
     const auto resolvedPath = pluginvalPath.value_or("pluginval");
+    const juce::String executable = juce::String::fromUTF8(resolvedPath.c_str()).trim();
 
-    juce::ChildProcess process;
-    const juce::String command =
-        juce::String::fromUTF8(resolvedPath.c_str()) + " --strictness-level " +
-        juce::String(caseSpec.pluginvalStrictness) + " --validate-in-process --output-dir \"" +
-        juce::String(caseSpec.artifactsDir) + "\" \"" + juce::String(caseSpec.pluginPath) + "\"";
-
-    if (!process.start(command)) {
+    auto setMissingToolResult = [&]() {
         if (caseSpec.pluginvalRequired) {
             result.status = "failed";
             result.message = "pluginval executable missing or not runnable";
@@ -1061,6 +1508,46 @@ bool runPluginval(const std::optional<std::string>& pluginvalPath, const CaseSpe
             result.status = "skipped";
             result.message = "pluginval not available; skipped optional validation";
         }
+    };
+
+    auto isCommandAvailable = [&](const juce::String& commandName) -> bool {
+        if (commandName.isEmpty()) {
+            return false;
+        }
+
+        const juce::String dequoted = commandName.unquoted();
+        const juce::File directPath(dequoted);
+        if (dequoted.containsChar('/') || dequoted.containsChar('\\') ||
+            juce::File::isAbsolutePath(dequoted)) {
+            return directPath.existsAsFile();
+        }
+
+        juce::ChildProcess probe;
+#if JUCE_WINDOWS
+        const juce::String probeCommand = "where " + commandName;
+#else
+        const juce::String probeCommand = "command -v " + commandName + " >/dev/null 2>&1";
+#endif
+        if (!probe.start(probeCommand)) {
+            return false;
+        }
+        probe.waitForProcessToFinish(5000);
+        return probe.getExitCode() == 0;
+    };
+
+    if (!isCommandAvailable(executable)) {
+        setMissingToolResult();
+        return false;
+    }
+
+    juce::ChildProcess process;
+    const juce::String command =
+        executable + " --strictness-level " +
+        juce::String(caseSpec.pluginvalStrictness) + " --validate-in-process --output-dir \"" +
+        juce::String(caseSpec.artifactsDir) + "\" \"" + juce::String(caseSpec.pluginPath) + "\"";
+
+    if (!process.start(command)) {
+        setMissingToolResult();
         return false;
     }
 
@@ -1072,13 +1559,21 @@ bool runPluginval(const std::optional<std::string>& pluginvalPath, const CaseSpe
     logFile.replaceWithText(output);
     result.artifacts["pluginvalLog"] = logFile.getFullPathName().toStdString();
 
-    if (process.getExitCode() != 0) {
+    const int exitCode = process.getExitCode();
+    result.metrics["pluginvalExitCode"] = static_cast<double>(exitCode);
+
+    if (exitCode != 0) {
+        if (!caseSpec.pluginvalRequired && exitCode == 127) {
+            result.status = "skipped";
+            result.message = "pluginval not available; skipped optional validation";
+            return false;
+        }
+
         result.status = "failed";
-        result.message = "pluginval reported failures";
+        result.message = "pluginval reported failures (exit code " + std::to_string(exitCode) + ")";
+        addRecommendation(result, "Inspect pluginval.log for validator output and rerun the same command directly in a shell for detailed diagnostics.");
         return false;
     }
-
-    result.metrics["pluginvalExitCode"] = 0.0;
     return true;
 }
 
@@ -1093,6 +1588,7 @@ CaseResult buildBaseResult(const CaseSpec& caseSpec) {
     result.status = "passed";
 
     addThreshold(result.thresholds, "aliasingRatioDbMax", caseSpec.thresholds.aliasingRatioDbMax);
+    addThreshold(result.thresholds, "abxLoudnessDeltaDbMax", caseSpec.thresholds.abxLoudnessDeltaDbMax);
     addThreshold(result.thresholds, "eqMaxErrorDb", caseSpec.thresholds.eqMaxErrorDb);
     addThreshold(result.thresholds, "eqRmsErrorDb", caseSpec.thresholds.eqRmsErrorDb);
     addThreshold(result.thresholds, "noiseFloorDbfsMax", caseSpec.thresholds.noiseFloorDbfsMax);
@@ -1108,6 +1604,10 @@ CaseResult buildBaseResult(const CaseSpec& caseSpec) {
     addThreshold(result.thresholds, "minRealtimeFactor", caseSpec.thresholds.minRealtimeFactor);
     addThreshold(result.thresholds, "maxMemoryDriftMb", caseSpec.thresholds.maxMemoryDriftMb);
     addThreshold(result.thresholds, "presetGainSpreadDbMax", caseSpec.thresholds.presetGainSpreadDbMax);
+    addThreshold(result.thresholds, "saturationWorstThdDbMax",
+                 caseSpec.thresholds.saturationWorstThdDbMax);
+    addThreshold(result.thresholds, "saturationOddEvenImbalanceDbMax",
+                 caseSpec.thresholds.saturationOddEvenImbalanceDbMax);
 
     return result;
 }
@@ -1188,6 +1688,20 @@ CaseResult AnalyzerEngine::runCase(const CaseSpec& caseSpec,
 
         if (caseSpec.testType == "presetGain") {
             runPresetGainSpread(caseSpec, request, result, seed);
+            applyThresholdChecks(result);
+            ensureFailureRecommendations(result);
+            return result;
+        }
+
+        if (caseSpec.testType == "abx") {
+            runAbxPreparation(caseSpec, request, result, seed);
+            applyThresholdChecks(result);
+            ensureFailureRecommendations(result);
+            return result;
+        }
+
+        if (caseSpec.testType == "saturationFingerprint") {
+            runSaturationFingerprint(caseSpec, request, result, seed);
             applyThresholdChecks(result);
             ensureFailureRecommendations(result);
             return result;
