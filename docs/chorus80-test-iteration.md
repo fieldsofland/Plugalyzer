@@ -13,10 +13,21 @@ This file defines a practical test strategy for Chorus80-style chain plugins and
 
 ## Committed Suite Templates
 
+- `suites/examples/chorus80.alias-quick.example.json`
+- `suites/examples/chorus80.dev-quick.example.json`
 - `suites/examples/chorus80.release-gate.example.json`
 - `suites/examples/chorus80.nonlinear-scan.example.json`
 - `suites/examples/chorus80.preset-loudness.example.json`
 - `suites/examples/chorus80.analog-vibe.example.json`
+
+## Recommended Execution Cadence
+
+1. Every build:
+   - `scripts/workflows/quick-alias.sh <plugin.vst3>`
+2. Feature-complete checkpoint:
+   - `scripts/workflows/dev-cycle.sh <plugin.vst3>`
+3. Pre-release:
+   - `scripts/workflows/release-cycle.sh <plugin.vst3>`
 
 ## Latest Local Results (March 3, 2026)
 

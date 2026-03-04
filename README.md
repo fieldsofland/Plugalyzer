@@ -45,6 +45,35 @@ Legacy alias copied post-build:
 
 - `build/Plugalyzer_artefacts/Release/plugalyzer`
 
+## Efficient Dev Workflow (Fast + Low Token)
+
+For day-to-day plugin iteration, do not run full suites on every build.
+
+Recommended loop:
+
+1. Alias-only quick check after most builds:
+```bash
+scripts/workflows/quick-alias.sh /abs/path/Chorus80.vst3
+```
+2. Broader quick dev suite when changing modulation/gain/bypass behavior:
+```bash
+scripts/workflows/dev-cycle.sh /abs/path/Chorus80.vst3
+```
+3. Full release battery before tagging/release:
+```bash
+scripts/workflows/release-cycle.sh /abs/path/Chorus80.vst3
+```
+
+Low-token output tips for agents:
+
+- Prefer `--json-summary` instead of `--json` on `vst-test run`.
+- Use `scripts/workflows/run-suite.sh` (defaults to summary mode).
+- Only use full `results.json` when deep-dive analysis is required.
+
+Workflow script prerequisites:
+
+- `jq` for suite path patching and summary extraction.
+
 ## Render Command
 
 `render` processes input audio/MIDI via the selected plugin and writes output audio.
@@ -100,6 +129,8 @@ vst-test run --suite suites/dreamrack.json --out-dir .vst-test/runs --jobs 4 --j
 
 Prebuilt examples for Chorus80-style chain plugins live under `suites/examples/`:
 
+- `chorus80.alias-quick.example.json`: fast aliasing sentinel for frequent build loops.
+- `chorus80.dev-quick.example.json`: compact multi-test dev suite.
 - `chorus80.release-gate.example.json`: lifecycle, determinism, latency, noise, state, and perf checks.
 - `chorus80.nonlinear-scan.example.json`: foldback aliasing scan + THD/IMD + saturation fingerprint + bypass pop checks for nonlinear modules.
 - `chorus80.preset-loudness.example.json`: perceived loudness spread across presets (+1 dB target) with trim plan artifacts.

@@ -24,6 +24,7 @@ vst-test --help
 vst-test inspect --plugin <path> --json
 vst-test validate --plugin <path> --json
 vst-test run --suite <suite.json> --out-dir .vst-test/runs --json
+vst-test run --suite <suite.json> --out-dir .vst-test/runs --json-summary
 vst-test baseline approve --suite <name> --run-id <run-id>
 vst-test report --results <results.json>
 ```
@@ -32,10 +33,19 @@ vst-test report --results <results.json>
 
 Use these suite templates when targeting Chorus80-like chain plugins:
 
+- `suites/examples/chorus80.alias-quick.example.json`
+- `suites/examples/chorus80.dev-quick.example.json`
 - `suites/examples/chorus80.release-gate.example.json`
 - `suites/examples/chorus80.nonlinear-scan.example.json`
 - `suites/examples/chorus80.preset-loudness.example.json`
 - `suites/examples/chorus80.analog-vibe.example.json`
+
+Workflow scripts:
+
+- `scripts/workflows/quick-alias.sh <plugin.vst3>`
+- `scripts/workflows/dev-cycle.sh <plugin.vst3>`
+- `scripts/workflows/release-cycle.sh <plugin.vst3>`
+- `scripts/workflows/run-suite.sh --suite <suite.json> --plugin <plugin.vst3>`
 
 ## Standard workflow
 

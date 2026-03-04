@@ -1,0 +1,90 @@
+{
+  "schemaVersion": 1,
+  "name": "chorus80-dev-quick",
+  "plugins": [
+    {
+      "id": "chorus80",
+      "path": "/abs/path/Chorus80.vst3",
+      "format": "vst3",
+      "adapter": "adapters/chorus80.chain.example.json"
+    }
+  ],
+  "matrix": {
+    "sampleRates": [48000],
+    "blockSizes": [256],
+    "channels": ["stereo"]
+  },
+  "signals": [
+    { "id": "sine_1k", "type": "sine", "frequencyHz": 1000, "levelDbfs": -18, "durationSec": 5 },
+    { "id": "hf_sweep", "type": "logSweep", "startHz": 20, "endHz": 22000, "durationSec": 8, "levelDbfs": -18 },
+    { "id": "silence", "type": "silence", "durationSec": 6 }
+  ],
+  "tests": [
+    { "id": "load", "type": "load", "plugin": "chorus80", "signal": "silence", "includeModuleIsolation": false },
+    { "id": "determinism", "type": "determinism", "plugin": "chorus80", "signal": "sine_1k", "includeModuleIsolation": false },
+    {
+      "id": "alias_deskfx",
+      "type": "aliasing",
+      "plugin": "chorus80",
+      "signal": "hf_sweep",
+      "moduleAllowList": ["deskfx"],
+      "aliasToneCount": 10,
+      "aliasHarmonicsMax": 16
+    },
+    {
+      "id": "sat_deskfx",
+      "type": "saturationFingerprint",
+      "plugin": "chorus80",
+      "signal": "sine_1k",
+      "moduleAllowList": ["deskfx"],
+      "saturationStartDbfs": -30.0,
+      "saturationEndDbfs": -6.0,
+      "saturationStepDb": 3.0
+    },
+    {
+      "id": "bypass_deskfx",
+      "type": "bypassClickPop",
+      "plugin": "chorus80",
+      "signal": "sine_1k",
+      "moduleAllowList": ["deskfx"]
+    },
+    {
+      "id": "mod_zipper",
+      "type": "automationZipper",
+      "plugin": "chorus80",
+      "signal": "sine_1k",
+      "moduleAllowList": ["chorusA"]
+    },
+    {
+      "id": "preset_gain_quick",
+      "type": "presetGain",
+      "plugin": "chorus80",
+      "signal": "sine_1k",
+      "includeModuleIsolation": false,
+      "presetSource": "programs",
+      "programLimit": 8,
+      "targetOutputDeltaDb": 1.0,
+      "measurementWarmupSec": 0.5,
+      "measurementDurationSec": 1.5
+    }
+  ],
+  "thresholdProfiles": {
+    "default": {
+      "aliasingRatioDbMax": -55.0,
+      "saturationWorstThdDbMax": 8.0,
+      "saturationOddEvenImbalanceDbMax": 18.0,
+      "bypassClickPeakDbfsMax": -55.0,
+      "zipperArtifactDbMax": -60.0,
+      "determinismResidualDbfsMax": -110.0,
+      "presetGainSpreadDbMax": 4.0
+    }
+  },
+  "baseline": {
+    "strict": false,
+    "metricTolerance": 0.5
+  },
+  "pluginval": {
+    "required": false,
+    "strictness": 5
+  }
+}

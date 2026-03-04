@@ -15,6 +15,8 @@ class RunCommand : public CLICommand {
     juce::File outDir = juce::File::getCurrentWorkingDirectory().getChildFile(".vst-test/runs");
     int jobs = 1;
     bool jsonOutput = false;
+    bool jsonSummaryOutput = false;
+    int maxSummaryCases = 20;
     std::optional<std::string> pluginvalPath;
     unsigned int seed = 1337;
     bool strictBaseline = false;

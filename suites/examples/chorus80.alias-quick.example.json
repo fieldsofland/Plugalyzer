@@ -1,0 +1,53 @@
+{
+  "schemaVersion": 1,
+  "name": "chorus80-alias-quick",
+  "plugins": [
+    {
+      "id": "chorus80",
+      "path": "/abs/path/Chorus80.vst3",
+      "format": "vst3",
+      "adapter": "adapters/chorus80.chain.example.json"
+    }
+  ],
+  "matrix": {
+    "sampleRates": [48000],
+    "blockSizes": [256],
+    "channels": ["stereo"]
+  },
+  "signals": [
+    { "id": "hf_sweep", "type": "logSweep", "startHz": 20, "endHz": 22000, "durationSec": 6, "levelDbfs": -18 }
+  ],
+  "tests": [
+    {
+      "id": "alias_amp",
+      "type": "aliasing",
+      "plugin": "chorus80",
+      "signal": "hf_sweep",
+      "moduleAllowList": ["amp"],
+      "aliasToneCount": 8,
+      "aliasHarmonicsMax": 14
+    },
+    {
+      "id": "alias_deskfx",
+      "type": "aliasing",
+      "plugin": "chorus80",
+      "signal": "hf_sweep",
+      "moduleAllowList": ["deskfx"],
+      "aliasToneCount": 8,
+      "aliasHarmonicsMax": 14
+    }
+  ],
+  "thresholdProfiles": {
+    "default": {
+      "aliasingRatioDbMax": -55.0
+    }
+  },
+  "baseline": {
+    "strict": false,
+    "metricTolerance": 0.5
+  },
+  "pluginval": {
+    "required": false,
+    "strictness": 5
+  }
+}

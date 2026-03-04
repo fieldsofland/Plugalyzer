@@ -146,6 +146,10 @@ std::shared_ptr<CLI::App> RunCommand::createApp() {
     app->add_option("--baseline-tolerance", baselineTolerance,
                     "Override baseline metric delta tolerance");
     app->add_flag("--json", jsonOutput, "Print machine-readable JSON output");
+    app->add_flag("--json-summary", jsonSummaryOutput,
+                  "Print concise machine-readable JSON summary (token-efficient)");
+    app->add_option("--max-summary-cases", maxSummaryCases,
+                    "Maximum number of non-passing cases to include in --json-summary output");
 
     return app;
 }
@@ -153,6 +157,12 @@ std::shared_ptr<CLI::App> RunCommand::createApp() {
 void RunCommand::execute() {
     if (jobs <= 0) {
         throw CLIException("--jobs must be >= 1", ExitCode::CliUsageError);
+    }
+    if (maxSummaryCases <= 0) {
+        throw CLIException("--max-summary-cases must be >= 1", ExitCode::CliUsageError);
+    }
+    if (jsonOutput && jsonSummaryOutput) {
+        throw CLIException("Use only one of --json or --json-summary", ExitCode::CliUsageError);
     }
 
     const auto runId = nowRunId();
@@ -245,6 +255,80 @@ void RunCommand::execute() {
 
     if (jsonOutput) {
         std::cout << vstest::toJson(runResult).dump(2) << std::endl;
+    } else if (jsonSummaryOutput) {
+        nlohmann::json summary;
+        summary["runId"] = runResult.runId;
+        summary["suite"] = runResult.suite;
+        summary["resultsFile"] = jsonFile.getFullPathName().toStdString();
+        summary["summary"] = {
+            {"total", runResult.summary.total},
+            {"passed", runResult.summary.passed},
+            {"failed", runResult.summary.failed},
+            {"crashed", runResult.summary.crashed},
+            {"skipped", runResult.summary.skipped},
+        };
+
+        nlohmann::json nonPassing = nlohmann::json::array();
+        int nonPassingTotal = 0;
+        for (const auto& result : runResult.cases) {
+            if (result.status == "passed" || result.status == "skipped") {
+                continue;
+            }
+
+            ++nonPassingTotal;
+            if (static_cast<int>(nonPassing.size()) >= maxSummaryCases) {
+                continue;
+            }
+
+            nlohmann::json caseSummary;
+            caseSummary["id"] = result.id;
+            caseSummary["status"] = result.status;
+            caseSummary["testType"] = result.testType;
+            caseSummary["message"] = result.message;
+
+            nlohmann::json compactMetrics = nlohmann::json::object();
+            int metricCount = 0;
+            for (const auto& metric : result.metrics) {
+                if (metricCount >= 8) {
+                    break;
+                }
+                compactMetrics[metric.first] = metric.second;
+                ++metricCount;
+            }
+            caseSummary["metrics"] = compactMetrics;
+
+            if (!result.recommendations.empty()) {
+                caseSummary["recommendation"] = result.recommendations.front();
+            }
+
+            nlohmann::json compactArtifacts = nlohmann::json::object();
+            auto addArtifactIfPresent = [&](const char* key) {
+                const auto it = result.artifacts.find(key);
+                if (it != result.artifacts.end()) {
+                    compactArtifacts[key] = it->second;
+                }
+            };
+            addArtifactIfPresent("reproCmd");
+            addArtifactIfPresent("workerLog");
+            addArtifactIfPresent("aliasingScan");
+            addArtifactIfPresent("presetGainSummary");
+            addArtifactIfPresent("saturationFingerprintCsv");
+
+            if (!compactArtifacts.empty()) {
+                caseSummary["artifacts"] = compactArtifacts;
+            }
+
+            nonPassing.push_back(caseSummary);
+        }
+
+        summary["nonPassing"] = {
+            {"total", nonPassingTotal},
+            {"shown", static_cast<int>(nonPassing.size())},
+            {"truncated", nonPassingTotal > static_cast<int>(nonPassing.size())},
+            {"cases", nonPassing},
+        };
+
+        std::cout << summary.dump(2) << std::endl;
     } else {
         std::cout << "Run complete: " << runRoot.getFullPathName() << std::endl;
         std::cout << "Summary: total=" << runResult.summary.total
