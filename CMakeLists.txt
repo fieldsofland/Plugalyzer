@@ -41,6 +41,7 @@ target_sources(Plugalyzer
     Source/ScanCommand.cpp
     Source/InspectCommand.cpp
     Source/ValidateCommand.cpp
+    Source/UiServerCommand.cpp
     Source/RunCommand.cpp
     Source/BaselineCommand.cpp
     Source/ReportCommand.cpp

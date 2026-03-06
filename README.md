@@ -10,6 +10,7 @@ It keeps Plugalyzer's offline rendering core and adds suite-based QA automation 
 - Plugin discovery scanner (`scan`)
 - Validation command with optional `pluginval` integration (`validate`)
 - Full suite runner with case-matrix expansion and worker subprocess isolation (`run` + hidden `worker`)
+- Native UI sidecar command for desktop app integration (`ui-server`)
 - Baseline management (`baseline approve`)
 - Reporting outputs (`results.json`, `junit.xml`, `report.html`)
 - Multi-case JSON contract for agent/CI consumption
@@ -22,6 +23,7 @@ vst-test inspect ...
 vst-test scan ...
 vst-test validate ...
 vst-test run --suite suite.json ...
+vst-test ui-server --port 47555 --session desktop
 vst-test baseline approve --suite <suite> --run-id <run-id>
 vst-test report --results <results.json>
 ```
@@ -44,6 +46,31 @@ Primary binary:
 Legacy alias copied post-build:
 
 - `build/Plugalyzer_artefacts/Release/plugalyzer`
+
+## Desktop GUI (Electron)
+
+Local desktop app source is under `apps/desktop`.
+
+Run in development:
+
+```bash
+scripts/workflows/gui-dev.sh
+```
+
+Build desktop app bundles:
+
+```bash
+scripts/workflows/gui-build.sh
+```
+
+GUI quick actions:
+
+- `Quick Alias` (default fast loop)
+- `Dev Quick`
+- `Release Gate`
+- `Nonlinear Scan`
+- `Preset Loudness`
+- `Release Cycle` (runs the three release suites sequentially)
 
 ## Efficient Dev Workflow (Fast + Low Token)
 

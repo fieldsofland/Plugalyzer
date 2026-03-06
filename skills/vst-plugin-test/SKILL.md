@@ -14,6 +14,7 @@ Current tool contract target:
 - CLI binary: `vst-test`
 - Schema version: `1`
 - Run output contract: `results.json`, `junit.xml`, `report.html`
+- Desktop sidecar transport: JSON-RPC lines over localhost TCP via `vst-test ui-server`
 
 If the CLI command set, schema, or output contract changes, update this skill in the same PR/commit.
 
@@ -25,6 +26,7 @@ vst-test inspect --plugin <path> --json
 vst-test validate --plugin <path> --json
 vst-test run --suite <suite.json> --out-dir .vst-test/runs --json
 vst-test run --suite <suite.json> --out-dir .vst-test/runs --json-summary
+vst-test ui-server --port 47555 --session desktop
 vst-test baseline approve --suite <name> --run-id <run-id>
 vst-test report --results <results.json>
 ```
@@ -46,6 +48,17 @@ Workflow scripts:
 - `scripts/workflows/dev-cycle.sh <plugin.vst3>`
 - `scripts/workflows/release-cycle.sh <plugin.vst3>`
 - `scripts/workflows/run-suite.sh --suite <suite.json> --plugin <plugin.vst3>`
+- `scripts/workflows/gui-dev.sh`
+- `scripts/workflows/gui-build.sh`
+
+Desktop GUI quick actions map to:
+
+- Quick Alias -> `chorus80.alias-quick.example.json`
+- Dev Quick -> `chorus80.dev-quick.example.json`
+- Release Gate -> `chorus80.release-gate.example.json`
+- Nonlinear Scan -> `chorus80.nonlinear-scan.example.json`
+- Preset Loudness -> `chorus80.preset-loudness.example.json`
+- Release Cycle -> runs `Release Gate`, then `Nonlinear Scan`, then `Preset Loudness`
 
 ## Standard workflow
 

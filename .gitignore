@@ -25,3 +25,5 @@ build/
 .vst-test/runs/
 .ci-smoke/
 .ci-smoke*/
+apps/desktop/node_modules/
+apps/desktop/dist/

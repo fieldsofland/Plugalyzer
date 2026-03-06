@@ -4,6 +4,7 @@
 #include "ReportCommand.h"
 #include "RunCommand.h"
 #include "ScanCommand.h"
+#include "UiServerCommand.h"
 #include "Utils.h"
 #include "ValidateCommand.h"
 #include "WorkerCaseCommand.h"
@@ -48,6 +49,9 @@ int runCommandLine(const std::string& commandLineParameters) {
 
     ReportCommand report;
     registerSubcommand(app, report);
+
+    UiServerCommand uiServer;
+    registerSubcommand(app, uiServer);
 
     WorkerCaseCommand worker;
     registerSubcommand(app, worker, {}, true);
