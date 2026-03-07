@@ -45,6 +45,11 @@ export default function App(): JSX.Element {
   const [compatibilityDiff, setCompatibilityDiff] = useState<Record<string, unknown> | null>(null);
 
   useEffect(() => {
+    if (!window.plugalyzerApi || typeof window.plugalyzerApi.onEvent !== 'function') {
+      pushError('Desktop preload bridge not available (window.plugalyzerApi missing)');
+      return () => {};
+    }
+
     const unsubscribe = window.plugalyzerApi.onEvent((event) => {
       ingestEvent(event);
     });

@@ -10,7 +10,7 @@
     "dev:electron": "wait-on tcp:5173 && cross-env VITE_DEV_SERVER_URL=http://localhost:5173 tsx src/main/main.ts",
     "build": "npm run build:renderer && npm run build:main",
     "build:renderer": "vite build",
-    "build:main": "tsc -p tsconfig.node.json",
+    "build:main": "tsc -p tsconfig.node.json && node -e \"const fs=require('fs');fs.copyFileSync('src/main/preload.cjs','dist/main/preload.cjs');\"",
     "start": "electron dist/main/main.js",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.node.json --noEmit"
   },
