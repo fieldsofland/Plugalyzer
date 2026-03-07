@@ -51,16 +51,16 @@ Legacy alias copied post-build:
 
 Local desktop app source is under `apps/desktop`.
 
-Run in development:
+One-command launcher (recommended):
 
 ```bash
-scripts/workflows/gui-dev.sh
+scripts/workflows/gui-app.sh
 ```
 
-Build desktop app bundles:
+Run in dev mode:
 
 ```bash
-scripts/workflows/gui-build.sh
+scripts/workflows/gui-app.sh --dev
 ```
 
 GUI quick actions:
@@ -71,6 +71,11 @@ GUI quick actions:
 - `Nonlinear Scan`
 - `Preset Loudness`
 - `Release Cycle` (runs the three release suites sequentially)
+
+Legacy scripts are still available:
+
+- `scripts/workflows/gui-dev.sh`
+- `scripts/workflows/gui-build.sh`
 
 ## Efficient Dev Workflow (Fast + Low Token)
 

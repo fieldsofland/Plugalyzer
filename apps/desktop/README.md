@@ -10,6 +10,20 @@ Electron + React desktop frontend for the `vst-test ui-server` sidecar.
 
 ## Run (dev)
 
+Recommended from repo root (builds native + desktop and launches app):
+
+```bash
+scripts/workflows/gui-app.sh
+```
+
+Dev mode from repo root:
+
+```bash
+scripts/workflows/gui-app.sh --dev
+```
+
+Direct desktop-only run:
+
 ```bash
 cd apps/desktop
 npm install

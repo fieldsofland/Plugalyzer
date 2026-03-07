@@ -48,6 +48,7 @@ Workflow scripts:
 - `scripts/workflows/dev-cycle.sh <plugin.vst3>`
 - `scripts/workflows/release-cycle.sh <plugin.vst3>`
 - `scripts/workflows/run-suite.sh --suite <suite.json> --plugin <plugin.vst3>`
+- `scripts/workflows/gui-app.sh` (single-command desktop launcher)
 - `scripts/workflows/gui-dev.sh`
 - `scripts/workflows/gui-build.sh`
 
