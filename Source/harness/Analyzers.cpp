@@ -349,6 +349,16 @@ std::string recommendationForMetric(const std::string& metric) {
     if (metric == "saturationOddEvenImbalanceDb") {
         return "Adjust transfer asymmetry and bias to reach the desired odd/even harmonic balance for the intended analog character.";
     }
+    if (metric == "streamToggleClickDbfs") {
+        return "Add short crossfades or parameter smoothing on bypass/state toggles so in-stream switching stays click-free.";
+    }
+    if (metric == "minWindowCorrelation" || metric == "maxSideMidRatioDb" ||
+        metric == "phaseCollapseWindows") {
+        return "Check stereo path polarity and mid/side balance; inverted or over-wide channels collapse when summed to mono.";
+    }
+    if (metric == "worstBlockRealtimeFactor" || metric == "p95BlockRealtimeFactor") {
+        return "Reduce worst-case block cost (avoid audio-thread allocations, amortize filter/FFT updates) to keep per-block headroom.";
+    }
 
     return "";
 }
@@ -400,8 +410,14 @@ void applyThresholdChecks(CaseResult& result) {
     checkUpperBound(result, "presetGainSpreadDb", "presetGainSpreadDbMax");
     checkUpperBound(result, "saturationWorstThdDb", "saturationWorstThdDbMax");
     checkUpperBound(result, "saturationOddEvenImbalanceDb", "saturationOddEvenImbalanceDbMax");
+    checkUpperBound(result, "streamToggleClickDbfs", "streamToggleClickDbfsMax");
+    checkUpperBound(result, "maxSideMidRatioDb", "sideMidRatioDbMax");
+    checkUpperBound(result, "phaseCollapseWindows", "phaseCollapseWindowsMax");
 
     checkLowerBound(result, "realtimeFactor", "minRealtimeFactor");
+    checkLowerBound(result, "minWindowCorrelation", "stereoCorrelationMin");
+    checkLowerBound(result, "worstBlockRealtimeFactor", "minWorstBlockRealtimeFactor");
+    checkLowerBound(result, "p95BlockRealtimeFactor", "minP95BlockRealtimeFactor");
 }
 
 std::set<std::string> parsePresetExtensions(const nlohmann::json& extra) {
@@ -1495,6 +1511,219 @@ void runPresetGainSpread(const CaseSpec& caseSpec, const RenderRequest& baseRequ
     writePresetTrimPlan(artifactDir, rows, caseSpec, result);
 }
 
+// Appends the initial toggle-parameter state and schedules in-stream toggles on the request.
+// Returns the toggle positions (in samples) for analysis after rendering.
+std::vector<int> configureBypassToggleStream(const CaseSpec& caseSpec, RenderRequest& request) {
+    const auto paramName = caseSpec.extra.value("paramName", std::string("Bypass"));
+    const auto valueA = caseSpec.extra.value("valueA", std::string("Off"));
+    const auto valueB = caseSpec.extra.value("valueB", std::string("On"));
+
+    const int totalSamples = request.input.getNumSamples();
+    const double durationSec =
+        static_cast<double>(totalSamples) / static_cast<double>(caseSpec.sampleRate);
+
+    std::vector<double> toggleTimesSec;
+    if (caseSpec.extra.contains("toggleAtSec") && caseSpec.extra["toggleAtSec"].is_array()) {
+        for (const auto& item : caseSpec.extra["toggleAtSec"]) {
+            if (item.is_number()) {
+                toggleTimesSec.push_back(item.get<double>());
+            }
+        }
+    }
+
+    if (toggleTimesSec.empty()) {
+        toggleTimesSec = {0.4 * durationSec, 0.7 * durationSec};
+    }
+
+    std::sort(toggleTimesSec.begin(), toggleTimesSec.end());
+
+    request.parameterSets.push_back({paramName, valueA});
+
+    std::vector<int> toggleSamples;
+    toggleSamples.reserve(toggleTimesSec.size());
+
+    bool toggleToB = true;
+    for (const auto timeSec : toggleTimesSec) {
+        const int atSample = std::clamp(
+            static_cast<int>(std::round(timeSec * caseSpec.sampleRate)), 0, totalSamples - 1);
+        request.scheduledParameterChanges.push_back(
+            {atSample, paramName, toggleToB ? valueB : valueA});
+        toggleSamples.push_back(atSample);
+        toggleToB = !toggleToB;
+    }
+
+    return toggleSamples;
+}
+
+void analyzeBypassToggleStream(const CaseSpec& caseSpec, const std::vector<int>& toggleSamples,
+                               const juce::AudioBuffer<float>& output, CaseResult& result) {
+    const int numSamples = output.getNumSamples();
+    const int windowHalf =
+        std::max(1, static_cast<int>(std::round(0.05 * caseSpec.sampleRate))); // +-50 ms
+    const int warmupSamples =
+        std::min(numSamples / 4, static_cast<int>(std::round(0.25 * caseSpec.sampleRate)));
+
+    auto maxStepInRange = [&output](int start, int end) {
+        double maxStep = 0.0;
+        for (int ch = 0; ch < output.getNumChannels(); ++ch) {
+            const auto* read = output.getReadPointer(ch);
+            for (int i = std::max(1, start); i < end; ++i) {
+                maxStep = std::max(maxStep,
+                                   std::abs(static_cast<double>(read[i]) - read[i - 1]));
+            }
+        }
+        return maxStep;
+    };
+
+    auto insideToggleWindow = [&toggleSamples, windowHalf](int sample) {
+        for (const auto toggle : toggleSamples) {
+            if (sample >= toggle - windowHalf && sample <= toggle + windowHalf) {
+                return true;
+            }
+        }
+        return false;
+    };
+
+    // Baseline: worst sample-to-sample step in steady-state regions (outside all
+    // toggle windows, after a short warmup).
+    double baselineStep = 0.0;
+    for (int ch = 0; ch < output.getNumChannels(); ++ch) {
+        const auto* read = output.getReadPointer(ch);
+        for (int i = std::max(1, warmupSamples); i < numSamples; ++i) {
+            if (insideToggleWindow(i) || insideToggleWindow(i - 1)) {
+                continue;
+            }
+            baselineStep =
+                std::max(baselineStep, std::abs(static_cast<double>(read[i]) - read[i - 1]));
+        }
+    }
+
+    double worstToggleStep = 0.0;
+    nlohmann::json toggles = nlohmann::json::array();
+    for (const auto toggle : toggleSamples) {
+        const double toggleStep =
+            maxStepInRange(toggle - windowHalf, std::min(numSamples, toggle + windowHalf + 1));
+        worstToggleStep = std::max(worstToggleStep, toggleStep);
+
+        nlohmann::json toggleJson;
+        toggleJson["atSample"] = toggle;
+        toggleJson["atSec"] = static_cast<double>(toggle) / caseSpec.sampleRate;
+        toggleJson["maxStepDbfs"] = linearToDb(toggleStep);
+        toggles.push_back(toggleJson);
+    }
+
+    const double clickAboveBaseline = std::max(0.0, worstToggleStep - baselineStep);
+
+    result.metrics["streamToggleClickDbfs"] = linearToDb(clickAboveBaseline);
+    result.metrics["streamToggleClickRawDbfs"] = linearToDb(worstToggleStep);
+    result.metrics["streamToggleBaselineStepDbfs"] = linearToDb(baselineStep);
+    result.metrics["streamToggleCount"] = static_cast<double>(toggleSamples.size());
+
+    // Default gate when the threshold profile does not specify one.
+    result.thresholds.try_emplace("streamToggleClickDbfsMax", -30.0);
+
+    nlohmann::json details;
+    details["method"] = "in_stream_toggle_click_v1";
+    details["paramName"] = caseSpec.extra.value("paramName", std::string("Bypass"));
+    details["windowHalfSec"] = 0.05;
+    details["toggles"] = toggles;
+    details["baselineStepDbfs"] = linearToDb(baselineStep);
+
+    const auto artifactDir = juce::File(caseSpec.artifactsDir);
+    const auto detailPath = artifactDir.getChildFile("bypass_toggle_stream.json");
+    detailPath.replaceWithText(details.dump(2));
+    result.artifacts["bypassToggleStream"] = detailPath.getFullPathName().toStdString();
+}
+
+void runStereoPhaseAnalysis(const CaseSpec& caseSpec, const juce::AudioBuffer<float>& output,
+                            CaseResult& result) {
+    if (output.getNumChannels() < 2) {
+        result.status = "skipped";
+        result.message = "stereoPhase requires a stereo output layout";
+        return;
+    }
+
+    const int numSamples = output.getNumSamples();
+    const int windowLength =
+        std::max(16, static_cast<int>(std::round(0.1 * caseSpec.sampleRate))); // 100 ms
+    const int hopLength =
+        std::max(8, static_cast<int>(std::round(0.05 * caseSpec.sampleRate))); // 50 ms hop
+    constexpr double silenceGateDbfs = -60.0;
+
+    const auto* left = output.getReadPointer(0);
+    const auto* right = output.getReadPointer(1);
+
+    double minCorrelation = 1.0;
+    double maxSideMidRatioDb = -std::numeric_limits<double>::infinity();
+    int collapseWindows = 0;
+    int analyzedWindows = 0;
+
+    for (int start = 0; start + windowLength <= numSamples; start += hopLength) {
+        double sumL = 0.0, sumR = 0.0, sumLL = 0.0, sumRR = 0.0, sumLR = 0.0;
+        double sumMidSq = 0.0, sumSideSq = 0.0;
+
+        for (int i = start; i < start + windowLength; ++i) {
+            const double l = left[i];
+            const double r = right[i];
+            sumL += l;
+            sumR += r;
+            sumLL += l * l;
+            sumRR += r * r;
+            sumLR += l * r;
+            const double mid = 0.5 * (l + r);
+            const double side = 0.5 * (l - r);
+            sumMidSq += mid * mid;
+            sumSideSq += side * side;
+        }
+
+        const auto n = static_cast<double>(windowLength);
+        const double totalRms = std::sqrt((sumLL + sumRR) / (2.0 * n));
+        if (linearToDb(totalRms) < silenceGateDbfs) {
+            continue;
+        }
+
+        const double meanL = sumL / n;
+        const double meanR = sumR / n;
+        const double varL = std::max(0.0, sumLL / n - meanL * meanL);
+        const double varR = std::max(0.0, sumRR / n - meanR * meanR);
+        const double covariance = sumLR / n - meanL * meanR;
+
+        constexpr double varianceEpsilon = 1.0e-18;
+        double correlation = 1.0; // treat (near-)constant channels as fully correlated
+        if (varL > varianceEpsilon && varR > varianceEpsilon) {
+            correlation = std::clamp(covariance / std::sqrt(varL * varR), -1.0, 1.0);
+        }
+
+        const double midRms = std::sqrt(sumMidSq / n);
+        const double sideRms = std::sqrt(sumSideSq / n);
+        const double sideMidRatioDb =
+            20.0 * std::log10((sideRms + 1.0e-12) / (midRms + 1.0e-12));
+
+        minCorrelation = std::min(minCorrelation, correlation);
+        maxSideMidRatioDb = std::max(maxSideMidRatioDb, sideMidRatioDb);
+        if (sideRms > 4.0 * midRms && correlation < -0.5) {
+            ++collapseWindows;
+        }
+        ++analyzedWindows;
+    }
+
+    if (analyzedWindows == 0) {
+        minCorrelation = 1.0;
+        maxSideMidRatioDb = -120.0;
+        collapseWindows = 0;
+    }
+
+    result.metrics["minWindowCorrelation"] = minCorrelation;
+    result.metrics["maxSideMidRatioDb"] = maxSideMidRatioDb;
+    result.metrics["phaseCollapseWindows"] = static_cast<double>(collapseWindows);
+    result.metrics["stereoWindowsAnalyzed"] = static_cast<double>(analyzedWindows);
+
+    // Default gates when the threshold profile does not specify them.
+    result.thresholds.try_emplace("stereoCorrelationMin", -0.8);
+    result.thresholds.try_emplace("sideMidRatioDbMax", 18.0);
+    result.thresholds.try_emplace("phaseCollapseWindowsMax", 0.0);
+}
+
 bool runPluginval(const std::optional<std::string>& pluginvalPath, const CaseSpec& caseSpec,
                   CaseResult& result) {
     const auto resolvedPath = pluginvalPath.value_or("pluginval");
@@ -1608,6 +1837,20 @@ CaseResult buildBaseResult(const CaseSpec& caseSpec) {
                  caseSpec.thresholds.saturationWorstThdDbMax);
     addThreshold(result.thresholds, "saturationOddEvenImbalanceDbMax",
                  caseSpec.thresholds.saturationOddEvenImbalanceDbMax);
+    addThreshold(result.thresholds, "streamToggleClickDbfsMax",
+                 caseSpec.thresholds.streamToggleClickDbfsMax);
+    addThreshold(result.thresholds, "stereoCorrelationMin", caseSpec.thresholds.stereoCorrelationMin);
+    addThreshold(result.thresholds, "sideMidRatioDbMax", caseSpec.thresholds.sideMidRatioDbMax);
+    addThreshold(result.thresholds, "phaseCollapseWindowsMax",
+                 caseSpec.thresholds.phaseCollapseWindowsMax);
+    addThreshold(result.thresholds, "minWorstBlockRealtimeFactor",
+                 caseSpec.thresholds.minWorstBlockRealtimeFactor);
+    addThreshold(result.thresholds, "minP95BlockRealtimeFactor",
+                 caseSpec.thresholds.minP95BlockRealtimeFactor);
+
+    if (caseSpec.thresholds.requireLayoutHonored.value_or(false)) {
+        result.thresholds["requireLayoutHonored"] = 1.0;
+    }
 
     return result;
 }
@@ -1707,6 +1950,11 @@ CaseResult AnalyzerEngine::runCase(const CaseSpec& caseSpec,
             return result;
         }
 
+        std::vector<int> streamToggleSamples;
+        if (caseSpec.testType == "bypassToggleStream") {
+            streamToggleSamples = configureBypassToggleStream(caseSpec, request);
+        }
+
         auto render = RenderEngine::render(request);
         const auto outputPath = artifactDir.getChildFile("output.wav");
         writeWav(render.output, render.sampleRate, outputPath);
@@ -1716,6 +1964,16 @@ CaseResult AnalyzerEngine::runCase(const CaseSpec& caseSpec,
         result.metrics["outputPeakDbfs"] = linearToDb(computePeak(render.output));
         result.metrics["outputRmsDbfs"] = linearToDb(computeRms(render.output));
         result.metrics["realtimeFactor"] = render.realtimeFactor;
+
+        result.layoutHonored = render.layoutHonored;
+        result.metrics["layoutHonored"] = render.layoutHonored ? 1.0 : 0.0;
+        if (caseSpec.thresholds.requireLayoutHonored.value_or(false) && !render.layoutHonored) {
+            result.status = "failed";
+            result.message = "requested channel layout (" + channelLayoutName(caseSpec.channels) +
+                             ") not honored; plugin fell back to its default bus layout";
+            addRecommendation(result,
+                              "Support the requested bus layout in isBusesLayoutSupported or remove that layout from the suite matrix.");
+        }
 
         if (caseSpec.testType == "load") {
             result.metrics["loadPass"] = 1.0;
@@ -1863,7 +2121,24 @@ CaseResult AnalyzerEngine::runCase(const CaseSpec& caseSpec,
             auto staticRender = RenderEngine::render(staticRequest);
 
             auto automatedRequest = request;
-            automatedRequest.automateFirstParameter = true;
+            const auto rampParamName = caseSpec.extra.value("paramName", std::string{});
+            const auto rampStartValue = caseSpec.extra.value("rampStartValue", std::string{});
+            const auto rampEndValue = caseSpec.extra.value("rampEndValue", std::string{});
+
+            if (!rampParamName.empty() || !rampStartValue.empty() || !rampEndValue.empty()) {
+                ParameterRampSpec ramp;
+                ramp.paramName = rampParamName;
+                if (!rampStartValue.empty()) {
+                    ramp.startValue = rampStartValue;
+                }
+                if (!rampEndValue.empty()) {
+                    ramp.endValue = rampEndValue;
+                }
+                automatedRequest.parameterRamp = ramp;
+            } else {
+                automatedRequest.automateFirstParameter = true;
+            }
+
             auto automatedRender = RenderEngine::render(automatedRequest);
 
             juce::AudioBuffer<float> diff(staticRender.output.getNumChannels(),
@@ -1910,6 +2185,12 @@ CaseResult AnalyzerEngine::runCase(const CaseSpec& caseSpec,
                 result.metrics["bypassClickPeakDbfs"] = linearToDb(maxJump);
             }
 
+        } else if (caseSpec.testType == "bypassToggleStream") {
+            analyzeBypassToggleStream(caseSpec, streamToggleSamples, render.output, result);
+
+        } else if (caseSpec.testType == "stereoPhase") {
+            runStereoPhaseAnalysis(caseSpec, render.output, result);
+
         } else if (caseSpec.testType == "stateRoundtrip") {
             const auto state = RenderEngine::captureState(request);
             auto rehydrated = request;
@@ -1927,12 +2208,18 @@ CaseResult AnalyzerEngine::runCase(const CaseSpec& caseSpec,
         } else if (caseSpec.testType == "perfStress") {
             constexpr int repetitions = 5;
             double sumRealtime = 0.0;
+            double worstBlockFactor = std::numeric_limits<double>::max();
+            double worstP95Factor = std::numeric_limits<double>::max();
             for (int i = 0; i < repetitions; ++i) {
                 auto stressRender = RenderEngine::render(request);
                 sumRealtime += stressRender.realtimeFactor;
+                worstBlockFactor = std::min(worstBlockFactor, stressRender.worstBlockRealtimeFactor);
+                worstP95Factor = std::min(worstP95Factor, stressRender.p95BlockRealtimeFactor);
             }
 
             result.metrics["realtimeFactor"] = sumRealtime / repetitions;
+            result.metrics["worstBlockRealtimeFactor"] = worstBlockFactor;
+            result.metrics["p95BlockRealtimeFactor"] = worstP95Factor;
             result.metrics["memoryDriftMb"] = 0.0;
 
         } else if (caseSpec.testType == "validate") {
