@@ -144,11 +144,17 @@ When `testType=abx`, use:
 - `artifacts.abxTrialsBlind` / `artifacts.abxTrialsAnswers`: listening/evaluation sheets
 - `artifacts.abxInstructions`: runbook for manual ABX session
 
-When `testType=saturationFingerprint`, use:
+When `testType=saturationFingerprint` (method `saturation_fingerprint_v2`), use:
 
 - `metrics.saturationWorstThdDb`: worst THD point across input sweep
 - `metrics.saturationOddEvenImbalanceDb`: mean absolute odd/even balance deviation
+- `metrics.saturationFundamentalMismatchCount`: levels where the spectrum peak was not at
+  the stimulus bin (nonzero = inspect the fingerprint JSON before trusting THD)
 - `artifacts.saturationFingerprintCsv`: curve data for plotting
+- v2 semantics: each level renders its own segment; analysis skips
+  max(250 ms, 40% of segment, `analysisWarmupSec`) after the level step and uses >= 1.0 s of
+  steady signal; the fundamental is read strictly at the stimulus frequency bin. (v1 had a
+  bin-mapping bug below 1 Hz spectral spacing that produced garbage THD at 44.1/48 kHz.)
 
 Cross-cutting fields:
 
@@ -169,6 +175,27 @@ When `testType=presetGain`, use:
 - `artifacts.presetGainAdjustmentsMd`: readable Markdown adjustment table
 - `artifacts.presetGainTrimPlan`: machine-readable trim plan
 - `artifacts.presetGainTrimScript`: helper script to apply Chorus80 master output trims
+
+## Interpretation pitfalls (learned from real plugin audits)
+
+- `latencyErrorSamples` is the residual AFTER the engine trims reported latency. "estimated 0,
+  reported N" is a correctly aligned plugin, not a bug.
+- `aliasingRatioDb` misleads on lowpass-heavy modules (near-Nyquist probes get attenuated
+  before the ratio is taken). Gate absolute `aliasWorstToneDbfsMax` instead.
+- THD/IMD gates on intentionally distorting modules (amp sims at high drive) measure the
+  product, not a defect. Compare the SAME config across sample rates instead: large
+  rate-inconsistency in any nonlinear metric is a strong real-bug signal (it has exposed a
+  hysteresis integrator bug and float32 sub-audio biquad limit cycles).
+- High `saturationOddEvenImbalanceDb` is expected for symmetric clippers (odd-only spectra).
+- `automationZipper` on wide-range params (master gain, delay time) integrates the legitimate
+  program change; use loose gates as spike backstops there and tight gates only on params
+  whose ramp should be inaudible.
+- `vst-test validate` overall status currently reports "failed" when pluginval is absent even
+  without `--require-pluginval`; judge by `nativeChecks` in the JSON when pluginval is not
+  installed.
+- Per-plugin parameter semantics matter more than any threshold: verify bypass/enable polarity
+  per parameter with `inspect` + a bisect render before building adapters (DreamRack has five
+  inverted bypass params; see docs/TESTING.md in the Chorus80 repo).
 
 ## Exit codes
 
