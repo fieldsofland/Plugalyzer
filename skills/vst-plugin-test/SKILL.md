@@ -94,8 +94,49 @@ Case-level JSON fields to consume:
 
 When `testType=aliasing`, use:
 
-- `metrics.aliasingRatioDb`: worst foldback ratio from high-frequency scan
+- `metrics.aliasingRatioDb`: worst foldback-to-fundamental ratio from high-frequency scan
+  (can mislead when the fundamental is lowpass-attenuated near Nyquist -- check absolutes)
+- `metrics.aliasWorstToneDbfs`: approximate absolute level of the worst alias component (dBFS)
+- `metrics.aliasWorstToneVsOutputRmsDb`: worst alias relative to analysis-window output RMS
 - `artifacts.aliasingScan`: per-tone foldback scan details
+- Gate `aliasWorstToneDbfsMax` (unset or 0.0 = disabled)
+
+When `testType=latency`, use:
+
+- `metrics.reportedLatencySamples`: plugin-reported latency
+- `metrics.latencyResidualSamples`: signed residual misalignment after the engine trims
+  reported latency (positive = output late, negative = early)
+- `metrics.latencyErrorSamples`: absolute residual, gated by `latencyErrorSamplesMax`
+
+When `testType=automationZipper`, optional test fields:
+
+- `paramName`, `rampStartValue`, `rampEndValue`: ramp a named parameter between values
+  (same text-or-normalized semantics as CLI `--param`); default remains first param 0..1
+- Metric `zipperArtifactDb` vs gate `zipperArtifactDbMax` (unchanged)
+
+When `testType=bypassToggleStream` (single-pass in-stream toggle click detection):
+
+- Fields: `paramName` (default "Bypass"), `valueA`/`valueB` (default "Off"/"On"),
+  `toggleAtSec` array (default 40% and 70% of the render)
+- `metrics.streamToggleClickDbfs`: worst toggle click above steady-state step baseline
+  (gated by `streamToggleClickDbfsMax`, default -30 when profile does not set it)
+- `metrics.streamToggleClickRawDbfs` / `metrics.streamToggleBaselineStepDbfs`: raw values
+- `artifacts.bypassToggleStream`: per-toggle detail JSON
+
+When `testType=stereoPhase` (phase / mono-collapse detection, stereo output only):
+
+- `metrics.minWindowCorrelation`: worst per-window (100 ms / 50 ms hop) L/R Pearson correlation
+  (gated by `stereoCorrelationMin`, default -0.8, lower bound)
+- `metrics.maxSideMidRatioDb`: worst side/mid RMS ratio (gated by `sideMidRatioDbMax`, default 18)
+- `metrics.phaseCollapseWindows`: windows with sideRms > 4x midRms AND correlation < -0.5
+  (gated by `phaseCollapseWindowsMax`, default 0); windows below -60 dBFS are ignored
+
+When `testType=perfStress`, use:
+
+- `metrics.realtimeFactor`: mean whole-render realtime factor over 5 repetitions
+- `metrics.worstBlockRealtimeFactor` / `metrics.p95BlockRealtimeFactor`: per-processBlock
+  timing headroom (gates `minWorstBlockRealtimeFactor` / `minP95BlockRealtimeFactor`;
+  omit or 0.0 = disabled)
 
 When `testType=abx`, use:
 
@@ -108,6 +149,16 @@ When `testType=saturationFingerprint`, use:
 - `metrics.saturationWorstThdDb`: worst THD point across input sweep
 - `metrics.saturationOddEvenImbalanceDb`: mean absolute odd/even balance deviation
 - `artifacts.saturationFingerprintCsv`: curve data for plotting
+
+Cross-cutting fields:
+
+- Every case result carries a `layoutHonored` bool (and `metrics.layoutHonored`) recording
+  whether the requested channel layout was honored or fell back to the plugin default;
+  threshold flag `requireLayoutHonored: true` fails fallen-back cases
+- `analysisWarmupSec` (per-test, default 0.75) skips the settle transient before analysis in
+  `thdn`, `imd`, `aliasing`, `saturationFingerprint`
+- Signal generators include `multitone` (`toneCount`), `pluck` (`frequencyHz`, `intervalSec`),
+  and `diRhythm`; all deterministic for a given `--seed`
 
 When `testType=presetGain`, use:
 

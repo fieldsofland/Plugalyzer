@@ -152,10 +152,125 @@ vst-test run --suite suites/dreamrack.json --out-dir .vst-test/runs --jobs 4 --j
 - `latency`
 - `automationZipper`
 - `bypassClickPop`
+- `bypassToggleStream`
+- `stereoPhase`
 - `stateRoundtrip`
 - `perfStress`
 - `validate`
 - `presetGain`
+
+### Signal Types
+
+- `sine` (`frequencyHz`, `levelDbfs`, `durationSec`)
+- `logSweep` (`startHz`, `endHz`, `levelDbfs`, `durationSec`)
+- `impulse` (`levelDbfs`, `durationSec`)
+- `silence` (`durationSec`)
+- `noise` (seeded white noise; `levelDbfs`, `durationSec`)
+- `multitone` (`toneCount` default 10, log-spaced 60 Hz..12 kHz, equal amplitude, seeded random phases, peak-normalized to `levelDbfs`)
+- `pluck` (Karplus-Strong guitar pluck; `frequencyHz` default 110, repeated every `intervalSec` default 1.5, exponentially decaying, band-limited)
+- `diRhythm` (~120 BPM alternating open/palm-muted plucks mixing low E and A fundamentals, guitar-DI-like crest factor)
+
+All generated signals are deterministic for a given `--seed`.
+
+### Automation Zipper (Named Parameter Ramps)
+
+`automationZipper` ramps the first plugin parameter 0..1 by default. Optionally target a named
+parameter and value range (values use the same text-or-normalized semantics as `--param`):
+
+```json
+{
+  "id": "zipper_amp_drive",
+  "type": "automationZipper",
+  "plugin": "myplugin",
+  "signal": "sine_1k",
+  "paramName": "Amp Drive",
+  "rampStartValue": "0:n",
+  "rampEndValue": "1:n"
+}
+```
+
+Metric/threshold unchanged: `zipperArtifactDb` vs `zipperArtifactDbMax`.
+
+### In-Stream Bypass Toggle Example
+
+`bypassToggleStream` renders a single pass and toggles a named parameter mid-stream at the given
+times, then measures the worst toggle click above the steady-state step baseline:
+
+```json
+{
+  "id": "toggle_amp_bypass",
+  "type": "bypassToggleStream",
+  "plugin": "myplugin",
+  "signal": "sine_1k",
+  "paramName": "Bypass",
+  "valueA": "Off",
+  "valueB": "On",
+  "toggleAtSec": [1.5, 2.8]
+}
+```
+
+Defaults: `paramName="Bypass"`, `valueA="Off"`, `valueB="On"`, toggles at 40% and 70% of the render.
+Metrics: `streamToggleClickDbfs` (click above baseline), `streamToggleClickRawDbfs`,
+`streamToggleBaselineStepDbfs`, `streamToggleCount`. Gate: `streamToggleClickDbfsMax`
+(default `-30` when the profile does not set it). Artifact: `bypass_toggle_stream.json`.
+
+### Stereo Phase / Mono-Collapse Example
+
+`stereoPhase` runs windowed analysis (100 ms windows, 50 ms hop) of the stereo output:
+per-window L/R Pearson correlation and mid/side RMS ratio, ignoring windows below -60 dBFS.
+
+```json
+{ "id": "stereo_phase", "type": "stereoPhase", "plugin": "myplugin", "signal": "sine_1k" }
+```
+
+Metrics: `minWindowCorrelation`, `maxSideMidRatioDb`, `phaseCollapseWindows`
+(windows where sideRms > 4x midRms AND correlation < -0.5), `stereoWindowsAnalyzed`.
+Gates: `stereoCorrelationMin` (default -0.8), `sideMidRatioDbMax` (default 18.0),
+`phaseCollapseWindowsMax` (default 0). Mono output layouts are skipped.
+
+### Per-Block Performance Metrics
+
+`perfStress` additionally reports per-`processBlock` timing:
+
+- `worstBlockRealtimeFactor`: block time budget / worst block wall time (min across 5 repetitions)
+- `p95BlockRealtimeFactor`: 95% of blocks are at or above this factor
+
+Gates: `minWorstBlockRealtimeFactor`, `minP95BlockRealtimeFactor` (omit or 0.0 = disabled).
+
+### Layout Honoring
+
+Every case result includes a `layoutHonored` bool (and `metrics.layoutHonored`) recording whether
+the plugin accepted the requested channel layout or silently fell back to its default bus layout.
+Set `"requireLayoutHonored": true` in a threshold profile to fail cases whose layout fell back.
+
+### Analysis Warmup
+
+`thdn`, `imd`, `aliasing`, and `saturationFingerprint` skip the first `analysisWarmupSec`
+(per-test field, default `0.75`) of rendered output before spectral/level analysis, so
+parameter-smoothing settle transients do not pollute distortion measurements. Set
+`"analysisWarmupSec": 0.0` to analyze from sample zero. For `aliasing` and
+`saturationFingerprint` the probe tones are lengthened by the warmup so the analysis window
+keeps its configured duration.
+
+### Latency Semantics
+
+The render engine trims the plugin-reported latency from the output before analysis, so the
+`latency` test measures the *residual* misalignment (symmetric +/- lag search):
+
+- `reportedLatencySamples`: what the plugin reports via `getLatencySamples()`
+- `latencyResidualSamples`: signed residual on the trimmed output (positive = late, negative = early)
+- `latencyErrorSamples`: `|latencyResidualSamples|`, gated by `latencyErrorSamplesMax`
+
+### Aliasing Absolute Metrics
+
+In addition to the relative `aliasingRatioDb` (worst foldback-to-fundamental ratio, which can
+mislead when the fundamental itself is lowpass-attenuated near Nyquist), `aliasing` reports:
+
+- `aliasWorstToneDbfs`: approximate absolute level of the single worst alias component (dBFS,
+  estimated from Hann main-lobe energy; probe tones use the suite signal's `levelDbfs`)
+- `aliasWorstToneVsOutputRmsDb`: that component relative to the analysis-window output RMS
+
+Gate: `aliasWorstToneDbfsMax` (upper bound; unset or `0.0` = disabled).
 
 ### Chorus80 Strategy Suites
 
