@@ -62,6 +62,7 @@ ThresholdProfile parseThresholdProfile(const nlohmann::json& j) {
     setOptional("presetGainSpreadDbMax", p.presetGainSpreadDbMax);
     setOptional("saturationWorstThdDbMax", p.saturationWorstThdDbMax);
     setOptional("saturationOddEvenImbalanceDbMax", p.saturationOddEvenImbalanceDbMax);
+    setOptional("aliasWorstToneDbfsMax", p.aliasWorstToneDbfsMax);
     setOptional("streamToggleClickDbfsMax", p.streamToggleClickDbfsMax);
     setOptional("stereoCorrelationMin", p.stereoCorrelationMin);
     setOptional("sideMidRatioDbMax", p.sideMidRatioDbMax);
@@ -136,6 +137,7 @@ nlohmann::json thresholdToJson(const ThresholdProfile& p) {
     setOptional("presetGainSpreadDbMax", p.presetGainSpreadDbMax);
     setOptional("saturationWorstThdDbMax", p.saturationWorstThdDbMax);
     setOptional("saturationOddEvenImbalanceDbMax", p.saturationOddEvenImbalanceDbMax);
+    setOptional("aliasWorstToneDbfsMax", p.aliasWorstToneDbfsMax);
     setOptional("streamToggleClickDbfsMax", p.streamToggleClickDbfsMax);
     setOptional("stereoCorrelationMin", p.stereoCorrelationMin);
     setOptional("sideMidRatioDbMax", p.sideMidRatioDbMax);

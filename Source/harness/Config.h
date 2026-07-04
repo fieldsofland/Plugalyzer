@@ -77,6 +77,7 @@ struct ThresholdProfile {
     std::optional<double> presetGainSpreadDbMax;
     std::optional<double> saturationWorstThdDbMax;
     std::optional<double> saturationOddEvenImbalanceDbMax;
+    std::optional<double> aliasWorstToneDbfsMax; // 0.0 (or unset) = disabled
     std::optional<double> streamToggleClickDbfsMax;
     std::optional<double> stereoCorrelationMin;
     std::optional<double> sideMidRatioDbMax;

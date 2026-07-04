@@ -172,6 +172,28 @@ int nextPow2(int value) {
     return power;
 }
 
+// Warmup skipped at the head of rendered output before spectral/level analysis, so
+// parameter-smoothing settle transients (engine ramping from init to case values)
+// do not pollute distortion/aliasing measurements.
+double analysisWarmupSeconds(const nlohmann::json& extra) {
+    return std::max(0.0, extra.value("analysisWarmupSec", 0.75));
+}
+
+juce::AudioBuffer<float> trimWarmup(const juce::AudioBuffer<float>& buffer, int sampleRate,
+                                    double warmupSec) {
+    constexpr int minAnalysisSamples = 256;
+    const int numSamples = buffer.getNumSamples();
+    int skip = static_cast<int>(std::round(warmupSec * sampleRate));
+    skip = std::clamp(skip, 0, std::max(0, numSamples - minAnalysisSamples));
+
+    juce::AudioBuffer<float> trimmed(buffer.getNumChannels(), numSamples - skip);
+    for (int ch = 0; ch < buffer.getNumChannels(); ++ch) {
+        trimmed.copyFrom(ch, 0, buffer, ch, skip, numSamples - skip);
+    }
+
+    return trimmed;
+}
+
 struct Spectrum {
     std::vector<double> magnitudes;
     std::vector<double> phases;
@@ -229,6 +251,8 @@ int dominantBin(const Spectrum& spectrum) {
     return bin;
 }
 
+// Cross-correlates input against output over lags in [-maxLag, +maxLag].
+// Positive result: output is late relative to input; negative: output is early.
 int estimateLatencySamples(const juce::AudioBuffer<float>& input, const juce::AudioBuffer<float>& output,
                            int maxLag) {
     if (input.getNumSamples() == 0 || output.getNumSamples() == 0) {
@@ -243,14 +267,15 @@ int estimateLatencySamples(const juce::AudioBuffer<float>& input, const juce::Au
     double bestCorrelation = -std::numeric_limits<double>::infinity();
     int bestLag = 0;
 
-    for (int lag = 0; lag <= maxLag; ++lag) {
-        double corr = 0.0;
-        const int valid = maxSamples - lag;
-        if (valid <= 0) {
-            break;
+    for (int lag = -maxLag; lag <= maxLag; ++lag) {
+        const int start = std::max(0, -lag);
+        const int end = maxSamples - std::max(0, lag);
+        if (end <= start) {
+            continue;
         }
 
-        for (int i = 0; i < valid; ++i) {
+        double corr = 0.0;
+        for (int i = start; i < end; ++i) {
             corr += static_cast<double>(inputPtr[i]) * static_cast<double>(outputPtr[i + lag]);
         }
 
@@ -265,7 +290,17 @@ int estimateLatencySamples(const juce::AudioBuffer<float>& input, const juce::Au
 
 void writeWav(const juce::AudioBuffer<float>& buffer, int sampleRate, const juce::File& path) {
     juce::WavAudioFormat wav;
+
+    // Full-path mkdirs before writing, plus one retry: parallel workers can race on
+    // shared parent directory creation, producing transient create failures.
+    path.getParentDirectory().createDirectory();
     auto stream = path.createOutputStream();
+    if (!stream) {
+        juce::Thread::sleep(50);
+        path.getParentDirectory().createDirectory();
+        stream = path.createOutputStream();
+    }
+
     if (!stream) {
         throw std::runtime_error("Unable to create artifact file: " +
                                  path.getFullPathName().toStdString());
@@ -301,7 +336,7 @@ void addRecommendation(CaseResult& result, const std::string& recommendation) {
 }
 
 std::string recommendationForMetric(const std::string& metric) {
-    if (metric == "aliasingRatioDb") {
+    if (metric == "aliasingRatioDb" || metric == "aliasWorstToneDbfs") {
         return "Reduce foldback by moving nonlinear stages to higher oversampling and adding steeper post-nonlinearity low-pass filtering.";
     }
     if (metric == "abxLoudnessDeltaDb") {
@@ -410,6 +445,7 @@ void applyThresholdChecks(CaseResult& result) {
     checkUpperBound(result, "presetGainSpreadDb", "presetGainSpreadDbMax");
     checkUpperBound(result, "saturationWorstThdDb", "saturationWorstThdDbMax");
     checkUpperBound(result, "saturationOddEvenImbalanceDb", "saturationOddEvenImbalanceDbMax");
+    checkUpperBound(result, "aliasWorstToneDbfs", "aliasWorstToneDbfsMax");
     checkUpperBound(result, "streamToggleClickDbfs", "streamToggleClickDbfsMax");
     checkUpperBound(result, "maxSideMidRatioDb", "sideMidRatioDbMax");
     checkUpperBound(result, "phaseCollapseWindows", "phaseCollapseWindowsMax");
@@ -533,8 +569,17 @@ struct FoldbackToneMeasurement {
     double toneHz = 0.0;
     double aliasRatioDb = 0.0;
     double foldbackEnergyDb = 0.0;
+    double worstAliasComponentDbfs = -400.0;
     int foldbackCount = 0;
 };
+
+// Approximate absolute component level (dBFS) from Hann-windowed main-lobe energy.
+// For a sine of amplitude A the Hann main lobe carries energy ~= (A*N/4)^2 * 1.5.
+double componentDbfsFromLobeEnergy(double lobeEnergy, int fftSize) {
+    const double amplitude =
+        4.0 * std::sqrt(std::max(0.0, lobeEnergy) / 1.5) / static_cast<double>(fftSize);
+    return linearToDb(amplitude);
+}
 
 FoldbackToneMeasurement analyzeFoldbackTone(const Spectrum& spectrum, int sampleRate, double toneHz,
                                             int harmonicMax, int binHalfWidth) {
@@ -542,6 +587,7 @@ FoldbackToneMeasurement analyzeFoldbackTone(const Spectrum& spectrum, int sample
     const double fundamentalEnergy = energyAroundBin(spectrum, fundamentalBin, std::max(1, binHalfWidth));
 
     double foldbackEnergy = 0.0;
+    double worstAliasEnergy = 0.0;
     int foldbackCount = 0;
     for (int harmonic = 2; harmonic <= harmonicMax; ++harmonic) {
         const double foldedHz = foldToNyquist(toneHz * static_cast<double>(harmonic), sampleRate);
@@ -550,7 +596,9 @@ FoldbackToneMeasurement analyzeFoldbackTone(const Spectrum& spectrum, int sample
             continue;
         }
 
-        foldbackEnergy += energyAroundBin(spectrum, aliasBin, binHalfWidth);
+        const double aliasEnergy = energyAroundBin(spectrum, aliasBin, binHalfWidth);
+        foldbackEnergy += aliasEnergy;
+        worstAliasEnergy = std::max(worstAliasEnergy, aliasEnergy);
         ++foldbackCount;
     }
 
@@ -559,6 +607,8 @@ FoldbackToneMeasurement analyzeFoldbackTone(const Spectrum& spectrum, int sample
     measurement.aliasRatioDb =
         10.0 * std::log10((foldbackEnergy + 1.0e-30) / (fundamentalEnergy + 1.0e-30));
     measurement.foldbackEnergyDb = 10.0 * std::log10(foldbackEnergy + 1.0e-30);
+    measurement.worstAliasComponentDbfs =
+        componentDbfsFromLobeEnergy(worstAliasEnergy, spectrum.fftSize);
     measurement.foldbackCount = foldbackCount;
     return measurement;
 }
@@ -574,17 +624,23 @@ void runAliasingFoldbackScan(const CaseSpec& caseSpec, const RenderRequest& base
         throw std::runtime_error("aliasEndNyquistRatio must be greater than aliasStartNyquistRatio");
     }
 
+    const double warmupSec = analysisWarmupSeconds(caseSpec.extra);
+
     const auto artifactDir = juce::File(caseSpec.artifactsDir);
     nlohmann::json details;
-    details["method"] = "high_freq_foldback_scan_v1";
+    details["method"] = "high_freq_foldback_scan_v2";
     details["sampleRate"] = caseSpec.sampleRate;
     details["toneCount"] = toneCount;
     details["toneRangeNyquistRatio"] = {startRatio, endRatio};
     details["harmonicsAnalyzed"] = harmonicMax;
+    details["analysisWarmupSec"] = warmupSec;
+    details["stimulusLevelDbfs"] = caseSpec.signal.levelDbfs;
 
     double worstRatioDb = -std::numeric_limits<double>::infinity();
     double sumRatioDb = 0.0;
     double worstToneHz = 0.0;
+    double worstAliasDbfs = -400.0;
+    double worstAliasVsOutputRmsDb = -400.0;
     int foldbackCount = 0;
 
     nlohmann::json tones = nlohmann::json::array();
@@ -597,7 +653,7 @@ void runAliasingFoldbackScan(const CaseSpec& caseSpec, const RenderRequest& base
         SignalDefinition toneSignal = caseSpec.signal;
         toneSignal.type = "sine";
         toneSignal.frequencyHz = toneHz;
-        toneSignal.durationSec = std::max(1.0, caseSpec.signal.durationSec);
+        toneSignal.durationSec = std::max(1.0, caseSpec.signal.durationSec) + warmupSec;
 
         auto toneRequest = baseRequest;
         toneRequest.input =
@@ -605,13 +661,19 @@ void runAliasingFoldbackScan(const CaseSpec& caseSpec, const RenderRequest& base
                                       seed + static_cast<unsigned int>(index + 1) * 911u);
 
         const auto toneRender = RenderEngine::render(toneRequest);
-        const auto spectrum = computeSpectrum(toneRender.output, 0);
+        const auto analysisBuffer = trimWarmup(toneRender.output, caseSpec.sampleRate, warmupSec);
+        const auto spectrum = computeSpectrum(analysisBuffer, 0);
         const auto measurement =
             analyzeFoldbackTone(spectrum, caseSpec.sampleRate, toneHz, harmonicMax, binHalfWidth);
+        const double toneOutputRmsDbfs = linearToDb(computeRms(analysisBuffer));
 
         if (measurement.aliasRatioDb > worstRatioDb) {
             worstRatioDb = measurement.aliasRatioDb;
             worstToneHz = toneHz;
+        }
+        if (measurement.worstAliasComponentDbfs > worstAliasDbfs) {
+            worstAliasDbfs = measurement.worstAliasComponentDbfs;
+            worstAliasVsOutputRmsDb = measurement.worstAliasComponentDbfs - toneOutputRmsDbfs;
         }
         sumRatioDb += measurement.aliasRatioDb;
         foldbackCount += measurement.foldbackCount;
@@ -620,6 +682,8 @@ void runAliasingFoldbackScan(const CaseSpec& caseSpec, const RenderRequest& base
         toneJson["toneHz"] = measurement.toneHz;
         toneJson["aliasRatioDb"] = measurement.aliasRatioDb;
         toneJson["foldbackEnergyDb"] = measurement.foldbackEnergyDb;
+        toneJson["worstAliasComponentDbfs"] = measurement.worstAliasComponentDbfs;
+        toneJson["outputRmsDbfs"] = toneOutputRmsDbfs;
         toneJson["foldbackCount"] = measurement.foldbackCount;
         tones.push_back(toneJson);
     }
@@ -627,6 +691,8 @@ void runAliasingFoldbackScan(const CaseSpec& caseSpec, const RenderRequest& base
     result.metrics["aliasingRatioDb"] = worstRatioDb;
     result.metrics["aliasingMeanRatioDb"] = sumRatioDb / static_cast<double>(toneCount);
     result.metrics["aliasingWorstToneHz"] = worstToneHz;
+    result.metrics["aliasWorstToneDbfs"] = worstAliasDbfs;
+    result.metrics["aliasWorstToneVsOutputRmsDb"] = worstAliasVsOutputRmsDb;
     result.metrics["aliasingFoldbackCount"] = static_cast<double>(foldbackCount);
     result.metrics["aliasingScannedToneCount"] = static_cast<double>(toneCount);
 
@@ -840,6 +906,7 @@ void runSaturationFingerprint(const CaseSpec& caseSpec, const RenderRequest& bas
     const double durationSec =
         std::max(1.0, caseSpec.extra.value("saturationDurationSec", caseSpec.signal.durationSec));
     const int harmonicMax = std::clamp(caseSpec.extra.value("saturationHarmonicMax", 10), 2, 32);
+    const double warmupSec = analysisWarmupSeconds(caseSpec.extra);
 
     const auto levels = makeLevelSeries(startDbfs, endDbfs, stepDb);
     std::vector<SaturationPoint> points;
@@ -851,7 +918,7 @@ void runSaturationFingerprint(const CaseSpec& caseSpec, const RenderRequest& bas
         testSignal.type = "sine";
         testSignal.frequencyHz = frequencyHz;
         testSignal.levelDbfs = levels[index];
-        testSignal.durationSec = durationSec;
+        testSignal.durationSec = durationSec + warmupSec;
         testSignal.startHz = caseSpec.signal.startHz;
         testSignal.endHz = caseSpec.signal.endHz;
 
@@ -860,7 +927,8 @@ void runSaturationFingerprint(const CaseSpec& caseSpec, const RenderRequest& bas
                                                   seed + static_cast<unsigned int>(index + 1) * 313u);
 
         const auto render = RenderEngine::render(request);
-        const auto spectrum = computeSpectrum(render.output, 0);
+        const auto analysisBuffer = trimWarmup(render.output, caseSpec.sampleRate, warmupSec);
+        const auto spectrum = computeSpectrum(analysisBuffer, 0);
         const int fundamentalBin = hzToBin(spectrum, caseSpec.sampleRate, frequencyHz);
         const double fundamentalEnergy = energyAroundBin(spectrum, fundamentalBin, 1);
 
@@ -893,8 +961,8 @@ void runSaturationFingerprint(const CaseSpec& caseSpec, const RenderRequest& bas
 
         SaturationPoint point;
         point.inputDbfs = levels[index];
-        point.outputRmsDbfs = linearToDb(computeRms(render.output));
-        point.outputPeakDbfs = linearToDb(computePeak(render.output));
+        point.outputRmsDbfs = linearToDb(computeRms(analysisBuffer));
+        point.outputPeakDbfs = linearToDb(computePeak(analysisBuffer));
         point.thdDb = 10.0 * std::log10((harmonicEnergy + 1e-30) / (fundamentalEnergy + 1e-30));
         point.evenOddBalanceDb = 10.0 * std::log10((evenEnergy + 1e-30) / (oddEnergy + 1e-30));
         point.h2Db = 10.0 * std::log10((h2Energy + 1e-30) / (fundamentalEnergy + 1e-30));
@@ -1837,6 +1905,11 @@ CaseResult buildBaseResult(const CaseSpec& caseSpec) {
                  caseSpec.thresholds.saturationWorstThdDbMax);
     addThreshold(result.thresholds, "saturationOddEvenImbalanceDbMax",
                  caseSpec.thresholds.saturationOddEvenImbalanceDbMax);
+    // 0.0 means "disabled" for the absolute alias gate, so only propagate real values.
+    if (caseSpec.thresholds.aliasWorstToneDbfsMax &&
+        *caseSpec.thresholds.aliasWorstToneDbfsMax != 0.0) {
+        result.thresholds["aliasWorstToneDbfsMax"] = *caseSpec.thresholds.aliasWorstToneDbfsMax;
+    }
     addThreshold(result.thresholds, "streamToggleClickDbfsMax",
                  caseSpec.thresholds.streamToggleClickDbfsMax);
     addThreshold(result.thresholds, "stereoCorrelationMin", caseSpec.thresholds.stereoCorrelationMin);
@@ -1869,7 +1942,11 @@ RenderRequest buildRequest(const CaseSpec& caseSpec, unsigned int seed) {
 }
 
 void ensureArtifacts(const CaseSpec& caseSpec) {
-    juce::File(caseSpec.artifactsDir).createDirectory();
+    const juce::File dir(caseSpec.artifactsDir);
+    if (!dir.createDirectory().wasOk()) {
+        juce::Thread::sleep(50);
+        dir.createDirectory();
+    }
 }
 
 void writeReproScript(const CaseSpec& caseSpec, const CaseResult& result) {
@@ -2052,7 +2129,9 @@ CaseResult AnalyzerEngine::runCase(const CaseSpec& caseSpec,
             result.metrics["phaseDeviationDeg"] = rms;
 
         } else if (caseSpec.testType == "thdn") {
-            auto spectrum = computeSpectrum(render.output, 0);
+            const auto analysisBuffer = trimWarmup(
+                render.output, caseSpec.sampleRate, analysisWarmupSeconds(caseSpec.extra));
+            auto spectrum = computeSpectrum(analysisBuffer, 0);
             const int fundamental = dominantBin(spectrum);
             const int bins = spectrum.magnitudes.size();
 
@@ -2074,7 +2153,9 @@ CaseResult AnalyzerEngine::runCase(const CaseSpec& caseSpec,
             request.input = SignalGenerator::generateImdDualTone(caseSpec.signal.durationSec, caseSpec.sampleRate,
                                                                  caseSpec.channels, caseSpec.signal.levelDbfs);
             render = RenderEngine::render(request);
-            auto spectrum = computeSpectrum(render.output, 0);
+            const auto analysisBuffer = trimWarmup(
+                render.output, caseSpec.sampleRate, analysisWarmupSeconds(caseSpec.extra));
+            auto spectrum = computeSpectrum(analysisBuffer, 0);
 
             const int fftBins = spectrum.magnitudes.size();
             const double binHz = static_cast<double>(caseSpec.sampleRate) / static_cast<double>(spectrum.fftSize);
@@ -2108,12 +2189,16 @@ CaseResult AnalyzerEngine::runCase(const CaseSpec& caseSpec,
                                                       caseSpec.sampleRate, caseSpec.channels, seed);
             render = RenderEngine::render(request);
 
-            const int estimated = estimateLatencySamples(request.input, render.output,
-                                                         std::min(caseSpec.sampleRate, 16384));
-            const double error = std::abs(estimated - render.reportedLatencySamples);
+            // RenderEngine already trims the plugin-reported latency from the output,
+            // so a correctly reporting plugin yields a residual of ~0 here. The error
+            // metric is the residual misalignment on the trimmed output (signed:
+            // positive = output late, negative = output early).
+            const int residual = estimateLatencySamples(request.input, render.output,
+                                                        std::min(caseSpec.sampleRate, 16384));
             result.metrics["reportedLatencySamples"] = render.reportedLatencySamples;
-            result.metrics["estimatedLatencySamples"] = estimated;
-            result.metrics["latencyErrorSamples"] = error;
+            result.metrics["estimatedLatencySamples"] = residual;
+            result.metrics["latencyResidualSamples"] = residual;
+            result.metrics["latencyErrorSamples"] = std::abs(residual);
 
         } else if (caseSpec.testType == "automationZipper") {
             auto staticRequest = request;
