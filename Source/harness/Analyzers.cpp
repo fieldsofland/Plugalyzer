@@ -550,8 +550,13 @@ double energyAroundBin(const Spectrum& spectrum, int centerBin, int halfWidth) {
 }
 
 int hzToBin(const Spectrum& spectrum, int sampleRate, double hz) {
-    const double binHz = static_cast<double>(sampleRate) / static_cast<double>(spectrum.fftSize);
-    return std::clamp(static_cast<int>(std::round(hz / std::max(1.0, binHz))), 1,
+    // Never clamp the bin spacing itself: for analysis windows longer than 1 s
+    // (fftSize > sampleRate) it drops below 1.0 Hz, and a std::max(1.0, binHz)
+    // "guard" here silently remapped every lookup to round(hz) — i.e. the
+    // fundamental/harmonic energies were read from unrelated noise bins.
+    const double binHz =
+        static_cast<double>(sampleRate) / static_cast<double>(std::max(1, spectrum.fftSize));
+    return std::clamp(static_cast<int>(std::round(hz / binHz)), 1,
                       static_cast<int>(spectrum.magnitudes.size()) - 1);
 }
 
@@ -895,6 +900,9 @@ struct SaturationPoint {
     double evenOddBalanceDb = 0.0;
     double h2Db = 0.0;
     double h3Db = 0.0;
+    int fundamentalBin = 0;
+    int spectrumPeakBin = 0;
+    bool fundamentalAtStimulusBin = true;
 };
 
 void runSaturationFingerprint(const CaseSpec& caseSpec, const RenderRequest& baseRequest,
@@ -908,6 +916,26 @@ void runSaturationFingerprint(const CaseSpec& caseSpec, const RenderRequest& bas
     const int harmonicMax = std::clamp(caseSpec.extra.value("saturationHarmonicMax", 10), 2, 32);
     const double warmupSec = analysisWarmupSeconds(caseSpec.extra);
 
+    // Each level is rendered as its own segment (fresh plugin instance, level set
+    // from sample 0). Only the steady-state tail may be analyzed: the head of the
+    // segment contains the level step plus parameter-smoothing/amp settle. Skip at
+    // least 250 ms or 40% of the segment (whichever is larger), and guarantee at
+    // least 1.0 s of steady-state audio per level, lengthening the segment if the
+    // configured duration is too short.
+    constexpr double minSteadySec = 1.0;
+    constexpr double minSkipSec = 0.25;
+    const auto steadySkipFor = [warmupSec](double segment) {
+        return std::max({minSkipSec, warmupSec, 0.4 * segment});
+    };
+
+    double segmentSec = durationSec + warmupSec;
+    double steadySkipSec = steadySkipFor(segmentSec);
+    if (segmentSec - steadySkipSec < minSteadySec) {
+        segmentSec = std::max(minSteadySec / 0.6, std::max(minSkipSec, warmupSec) + minSteadySec);
+        steadySkipSec = steadySkipFor(segmentSec);
+    }
+    const double steadyAnalysisSec = segmentSec - steadySkipSec;
+
     const auto levels = makeLevelSeries(startDbfs, endDbfs, stepDb);
     std::vector<SaturationPoint> points;
     points.reserve(levels.size());
@@ -918,7 +946,7 @@ void runSaturationFingerprint(const CaseSpec& caseSpec, const RenderRequest& bas
         testSignal.type = "sine";
         testSignal.frequencyHz = frequencyHz;
         testSignal.levelDbfs = levels[index];
-        testSignal.durationSec = durationSec + warmupSec;
+        testSignal.durationSec = segmentSec;
         testSignal.startHz = caseSpec.signal.startHz;
         testSignal.endHz = caseSpec.signal.endHz;
 
@@ -927,9 +955,16 @@ void runSaturationFingerprint(const CaseSpec& caseSpec, const RenderRequest& bas
                                                   seed + static_cast<unsigned int>(index + 1) * 313u);
 
         const auto render = RenderEngine::render(request);
-        const auto analysisBuffer = trimWarmup(render.output, caseSpec.sampleRate, warmupSec);
+        const auto analysisBuffer = trimWarmup(render.output, caseSpec.sampleRate, steadySkipSec);
         const auto spectrum = computeSpectrum(analysisBuffer, 0);
+        // The fundamental is always measured at the stimulus frequency bin — never a
+        // searched peak, which can land on junk when the output is noisy. As a
+        // sanity check, verify the spectrum's dominant bin sits inside the Hann
+        // main lobe around that bin; a mismatch means the output no longer carries
+        // the stimulus tone (detune/modulation) and the point is flagged.
         const int fundamentalBin = hzToBin(spectrum, caseSpec.sampleRate, frequencyHz);
+        const int spectrumPeakBin = dominantBin(spectrum);
+        const bool fundamentalAtStimulusBin = std::abs(spectrumPeakBin - fundamentalBin) <= 2;
         const double fundamentalEnergy = energyAroundBin(spectrum, fundamentalBin, 1);
 
         double harmonicEnergy = 0.0;
@@ -961,6 +996,9 @@ void runSaturationFingerprint(const CaseSpec& caseSpec, const RenderRequest& bas
 
         SaturationPoint point;
         point.inputDbfs = levels[index];
+        point.fundamentalBin = fundamentalBin;
+        point.spectrumPeakBin = spectrumPeakBin;
+        point.fundamentalAtStimulusBin = fundamentalAtStimulusBin;
         point.outputRmsDbfs = linearToDb(computeRms(analysisBuffer));
         point.outputPeakDbfs = linearToDb(computePeak(analysisBuffer));
         point.thdDb = 10.0 * std::log10((harmonicEnergy + 1e-30) / (fundamentalEnergy + 1e-30));
@@ -980,9 +1018,12 @@ void runSaturationFingerprint(const CaseSpec& caseSpec, const RenderRequest& bas
     const auto markdownPath = artifactDir.getChildFile("saturation_fingerprint.md");
 
     nlohmann::json report;
-    report["method"] = "saturation_fingerprint_v1";
+    report["method"] = "saturation_fingerprint_v2";
     report["frequencyHz"] = frequencyHz;
     report["durationSec"] = durationSec;
+    report["segmentSec"] = segmentSec;
+    report["steadySkipSec"] = steadySkipSec;
+    report["steadyAnalysisSec"] = steadyAnalysisSec;
     report["harmonicMax"] = harmonicMax;
     report["levelsDbfs"] = levels;
 
@@ -990,6 +1031,7 @@ void runSaturationFingerprint(const CaseSpec& caseSpec, const RenderRequest& bas
     double sumThdDb = 0.0;
     double sumAbsOddEven = 0.0;
     double maxOutputPeakDbfs = -std::numeric_limits<double>::infinity();
+    int fundamentalMismatchCount = 0;
 
     nlohmann::json pointsJson = nlohmann::json::array();
     std::ostringstream csv;
@@ -1005,6 +1047,9 @@ void runSaturationFingerprint(const CaseSpec& caseSpec, const RenderRequest& bas
         sumThdDb += point.thdDb;
         sumAbsOddEven += std::abs(point.evenOddBalanceDb);
         maxOutputPeakDbfs = std::max(maxOutputPeakDbfs, point.outputPeakDbfs);
+        if (!point.fundamentalAtStimulusBin) {
+            ++fundamentalMismatchCount;
+        }
 
         nlohmann::json pointJson;
         pointJson["inputDbfs"] = point.inputDbfs;
@@ -1014,6 +1059,9 @@ void runSaturationFingerprint(const CaseSpec& caseSpec, const RenderRequest& bas
         pointJson["evenOddBalanceDb"] = point.evenOddBalanceDb;
         pointJson["h2Db"] = point.h2Db;
         pointJson["h3Db"] = point.h3Db;
+        pointJson["fundamentalBin"] = point.fundamentalBin;
+        pointJson["spectrumPeakBin"] = point.spectrumPeakBin;
+        pointJson["fundamentalAtStimulusBin"] = point.fundamentalAtStimulusBin;
         pointsJson.push_back(pointJson);
 
         csv << formatDb(point.inputDbfs) << "," << formatDb(point.outputRmsDbfs) << ","
@@ -1037,6 +1085,8 @@ void runSaturationFingerprint(const CaseSpec& caseSpec, const RenderRequest& bas
     result.artifacts["saturationFingerprintMd"] = markdownPath.getFullPathName().toStdString();
 
     result.metrics["saturationInputPointCount"] = static_cast<double>(points.size());
+    result.metrics["saturationFundamentalMismatchCount"] =
+        static_cast<double>(fundamentalMismatchCount);
     result.metrics["saturationWorstThdDb"] = worstThdDb;
     result.metrics["saturationMeanThdDb"] =
         sumThdDb / static_cast<double>(points.size());
