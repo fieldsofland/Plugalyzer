@@ -54,6 +54,8 @@ struct SignalDefinition {
     double durationSec = 5.0;
     double startHz = 20.0;
     double endHz = 20000.0;
+    int toneCount = 10;       // multitone only
+    double intervalSec = 1.5; // pluck only
 };
 
 struct ThresholdProfile {
@@ -75,6 +77,13 @@ struct ThresholdProfile {
     std::optional<double> presetGainSpreadDbMax;
     std::optional<double> saturationWorstThdDbMax;
     std::optional<double> saturationOddEvenImbalanceDbMax;
+    std::optional<double> streamToggleClickDbfsMax;
+    std::optional<double> stereoCorrelationMin;
+    std::optional<double> sideMidRatioDbMax;
+    std::optional<double> phaseCollapseWindowsMax;
+    std::optional<double> minWorstBlockRealtimeFactor;
+    std::optional<double> minP95BlockRealtimeFactor;
+    std::optional<bool> requireLayoutHonored;
 };
 
 struct TestDefinition {

@@ -34,6 +34,7 @@ struct CaseResult {
     std::vector<std::string> recommendations;
     bool baselineCompared = false;
     bool baselinePassed = true;
+    bool layoutHonored = true;
 };
 
 struct RunSummary {

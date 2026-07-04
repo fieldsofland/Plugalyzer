@@ -5,6 +5,8 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
+#include <limits>
 #include <stdexcept>
 
 namespace vstest {
@@ -96,7 +98,7 @@ void applyProgram(juce::AudioPluginInstance& plugin, const std::optional<int>& p
 
 juce::AudioPluginInstance::BusesLayout createLayout(const juce::AudioPluginInstance& plugin,
                                                     int channels, int& inputChannelsOut,
-                                                    int& outputChannelsOut) {
+                                                    int& outputChannelsOut, bool& layoutHonoredOut) {
     juce::AudioPluginInstance::BusesLayout layout;
     layout.inputBuses.add(juce::AudioChannelSet::canonicalChannelSet(channels));
     layout.outputBuses.add(juce::AudioChannelSet::canonicalChannelSet(channels));
@@ -104,20 +106,88 @@ juce::AudioPluginInstance::BusesLayout createLayout(const juce::AudioPluginInsta
     if (plugin.checkBusesLayoutSupported(layout)) {
         inputChannelsOut = channels;
         outputChannelsOut = channels;
+        layoutHonoredOut = true;
         return layout;
     }
 
     auto fallbackLayout = plugin.getBusesLayout();
     inputChannelsOut = std::max(1, fallbackLayout.getMainInputChannels());
     outputChannelsOut = std::max(1, fallbackLayout.getMainOutputChannels());
+    layoutHonoredOut = false;
     return fallbackLayout;
+}
+
+struct ResolvedRamp {
+    juce::AudioProcessorParameter* parameter = nullptr;
+    float startNormalized = 0.0f;
+    float endNormalized = 1.0f;
+};
+
+struct ResolvedScheduledChange {
+    int atSample = 0;
+    juce::AudioProcessorParameter* parameter = nullptr;
+    float normalizedValue = 0.0f;
+};
+
+std::optional<ResolvedRamp> resolveRamp(juce::AudioPluginInstance& plugin,
+                                        const RenderRequest& request) {
+    if (request.parameterRamp) {
+        ResolvedRamp ramp;
+        if (request.parameterRamp->paramName.empty()) {
+            if (plugin.getParameters().isEmpty()) {
+                return std::nullopt;
+            }
+            ramp.parameter = plugin.getParameters()[0];
+        } else {
+            ramp.parameter =
+                PluginUtils::getPluginParameterByName(plugin, request.parameterRamp->paramName);
+        }
+
+        ramp.startNormalized =
+            parameterValueFromString(ramp.parameter, request.parameterRamp->startValue);
+        ramp.endNormalized =
+            parameterValueFromString(ramp.parameter, request.parameterRamp->endValue);
+        return ramp;
+    }
+
+    if (request.automateFirstParameter && !plugin.getParameters().isEmpty()) {
+        ResolvedRamp ramp;
+        ramp.parameter = plugin.getParameters()[0];
+        ramp.startNormalized = 0.0f;
+        ramp.endNormalized = 1.0f;
+        return ramp;
+    }
+
+    return std::nullopt;
+}
+
+std::vector<ResolvedScheduledChange> resolveScheduledChanges(juce::AudioPluginInstance& plugin,
+                                                             const RenderRequest& request) {
+    std::vector<ResolvedScheduledChange> resolved;
+    resolved.reserve(request.scheduledParameterChanges.size());
+
+    for (const auto& change : request.scheduledParameterChanges) {
+        ResolvedScheduledChange item;
+        item.atSample = std::max(0, change.atSample);
+        item.parameter = PluginUtils::getPluginParameterByName(plugin, change.paramName);
+        item.normalizedValue = parameterValueFromString(item.parameter, change.value);
+        resolved.push_back(item);
+    }
+
+    std::sort(resolved.begin(), resolved.end(),
+              [](const ResolvedScheduledChange& a, const ResolvedScheduledChange& b) {
+                  return a.atSample < b.atSample;
+              });
+
+    return resolved;
 }
 
 RenderResult renderWithPlugin(juce::AudioPluginInstance& plugin, const RenderRequest& request) {
     int inputChannels = std::max(1, request.channels);
     int outputChannels = std::max(1, request.channels);
+    bool layoutHonored = true;
 
-    auto layout = createLayout(plugin, request.channels, inputChannels, outputChannels);
+    auto layout = createLayout(plugin, request.channels, inputChannels, outputChannels, layoutHonored);
     if (!plugin.setBusesLayout(layout)) {
         throw std::runtime_error("Plugin does not support requested bus layout");
     }
@@ -135,9 +205,16 @@ RenderResult renderWithPlugin(juce::AudioPluginInstance& plugin, const RenderReq
                                               request.blockSize);
     juce::MidiBuffer midi;
 
-    auto startTime = std::chrono::steady_clock::now();
+    const auto ramp = resolveRamp(plugin, request);
+    const auto scheduledChanges = resolveScheduledChanges(plugin, request);
+    size_t nextScheduledChange = 0;
 
-    auto* firstParam = plugin.getParameters().isEmpty() ? nullptr : plugin.getParameters()[0];
+    // Pre-allocated per-block realtime factors (block budget / block wall time).
+    const int blockCount = (totalSamplesToProcess + request.blockSize - 1) / request.blockSize;
+    std::vector<double> blockRealtimeFactors;
+    blockRealtimeFactors.reserve(static_cast<size_t>(std::max(1, blockCount)));
+
+    auto startTime = std::chrono::steady_clock::now();
 
     for (int sampleIndex = 0; sampleIndex < totalSamplesToProcess; sampleIndex += request.blockSize) {
         processingBuffer.clear();
@@ -157,14 +234,34 @@ RenderResult renderWithPlugin(juce::AudioPluginInstance& plugin, const RenderReq
             }
         }
 
-        if (request.automateFirstParameter && firstParam != nullptr) {
+        if (ramp && ramp->parameter != nullptr) {
             const double progress =
                 static_cast<double>(sampleIndex) / static_cast<double>(std::max(1, totalSamplesToProcess - 1));
-            firstParam->setValueNotifyingHost(static_cast<float>(progress));
+            const double value = static_cast<double>(ramp->startNormalized) +
+                                 (static_cast<double>(ramp->endNormalized) -
+                                  static_cast<double>(ramp->startNormalized)) *
+                                     progress;
+            ramp->parameter->setValueNotifyingHost(static_cast<float>(value));
+        }
+
+        while (nextScheduledChange < scheduledChanges.size() &&
+               scheduledChanges[nextScheduledChange].atSample < sampleIndex + blockLength) {
+            const auto& change = scheduledChanges[nextScheduledChange];
+            change.parameter->setValueNotifyingHost(change.normalizedValue);
+            ++nextScheduledChange;
         }
 
         midi.clear();
+        const auto blockStart = std::chrono::steady_clock::now();
         plugin.processBlock(processingBuffer, midi);
+        const auto blockEnd = std::chrono::steady_clock::now();
+
+        const double blockSeconds =
+            std::chrono::duration_cast<std::chrono::duration<double>>(blockEnd - blockStart).count();
+        const double blockBudgetSeconds =
+            static_cast<double>(blockLength) / static_cast<double>(request.sampleRate);
+        blockRealtimeFactors.push_back(blockSeconds <= 0.0 ? std::numeric_limits<double>::max()
+                                                           : blockBudgetSeconds / blockSeconds);
 
         for (int i = 0; i < blockLength; ++i) {
             const int outputSample = sampleIndex + i - latency;
@@ -191,6 +288,15 @@ RenderResult renderWithPlugin(juce::AudioPluginInstance& plugin, const RenderReq
     result.reportedLatencySamples = latency;
     result.processingSeconds = processingSec;
     result.realtimeFactor = processingSec <= 0.0 ? 0.0 : audioSec / processingSec;
+    result.layoutHonored = layoutHonored;
+
+    if (!blockRealtimeFactors.empty()) {
+        std::sort(blockRealtimeFactors.begin(), blockRealtimeFactors.end());
+        result.worstBlockRealtimeFactor = blockRealtimeFactors.front();
+        const auto p95Index = static_cast<size_t>(
+            std::floor(0.05 * static_cast<double>(blockRealtimeFactors.size() - 1)));
+        result.p95BlockRealtimeFactor = blockRealtimeFactors[p95Index];
+    }
 
     plugin.releaseResources();
 

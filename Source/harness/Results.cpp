@@ -61,6 +61,7 @@ nlohmann::json toJson(const CaseResult& result) {
     j["recommendations"] = result.recommendations;
     j["baselineCompared"] = result.baselineCompared;
     j["baselinePassed"] = result.baselinePassed;
+    j["layoutHonored"] = result.layoutHonored;
 
     return j;
 }
@@ -94,6 +95,7 @@ CaseResult caseResultFromJson(const nlohmann::json& j) {
 
     result.baselineCompared = j.value("baselineCompared", false);
     result.baselinePassed = j.value("baselinePassed", true);
+    result.layoutHonored = j.value("layoutHonored", true);
 
     return result;
 }

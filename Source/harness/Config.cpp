@@ -62,6 +62,16 @@ ThresholdProfile parseThresholdProfile(const nlohmann::json& j) {
     setOptional("presetGainSpreadDbMax", p.presetGainSpreadDbMax);
     setOptional("saturationWorstThdDbMax", p.saturationWorstThdDbMax);
     setOptional("saturationOddEvenImbalanceDbMax", p.saturationOddEvenImbalanceDbMax);
+    setOptional("streamToggleClickDbfsMax", p.streamToggleClickDbfsMax);
+    setOptional("stereoCorrelationMin", p.stereoCorrelationMin);
+    setOptional("sideMidRatioDbMax", p.sideMidRatioDbMax);
+    setOptional("phaseCollapseWindowsMax", p.phaseCollapseWindowsMax);
+    setOptional("minWorstBlockRealtimeFactor", p.minWorstBlockRealtimeFactor);
+    setOptional("minP95BlockRealtimeFactor", p.minP95BlockRealtimeFactor);
+
+    if (j.contains("requireLayoutHonored")) {
+        p.requireLayoutHonored = j["requireLayoutHonored"].get<bool>();
+    }
 
     return p;
 }
@@ -126,6 +136,16 @@ nlohmann::json thresholdToJson(const ThresholdProfile& p) {
     setOptional("presetGainSpreadDbMax", p.presetGainSpreadDbMax);
     setOptional("saturationWorstThdDbMax", p.saturationWorstThdDbMax);
     setOptional("saturationOddEvenImbalanceDbMax", p.saturationOddEvenImbalanceDbMax);
+    setOptional("streamToggleClickDbfsMax", p.streamToggleClickDbfsMax);
+    setOptional("stereoCorrelationMin", p.stereoCorrelationMin);
+    setOptional("sideMidRatioDbMax", p.sideMidRatioDbMax);
+    setOptional("phaseCollapseWindowsMax", p.phaseCollapseWindowsMax);
+    setOptional("minWorstBlockRealtimeFactor", p.minWorstBlockRealtimeFactor);
+    setOptional("minP95BlockRealtimeFactor", p.minP95BlockRealtimeFactor);
+
+    if (p.requireLayoutHonored) {
+        j["requireLayoutHonored"] = *p.requireLayoutHonored;
+    }
 
     return j;
 }
@@ -163,11 +183,13 @@ SignalDefinition signalFromJson(const nlohmann::json& j) {
     SignalDefinition signal;
     signal.id = getRequired<std::string>(j, "id");
     signal.type = getRequired<std::string>(j, "type");
-    signal.frequencyHz = j.value("frequencyHz", signal.frequencyHz);
+    signal.frequencyHz = j.value("frequencyHz", signal.type == "pluck" ? 110.0 : signal.frequencyHz);
     signal.levelDbfs = j.value("levelDbfs", signal.levelDbfs);
     signal.durationSec = j.value("durationSec", signal.durationSec);
     signal.startHz = j.value("startHz", signal.startHz);
     signal.endHz = j.value("endHz", signal.endHz);
+    signal.toneCount = j.value("toneCount", signal.toneCount);
+    signal.intervalSec = j.value("intervalSec", signal.intervalSec);
 
     return signal;
 }
@@ -181,6 +203,8 @@ nlohmann::json signalToJson(const SignalDefinition& signal) {
     j["durationSec"] = signal.durationSec;
     j["startHz"] = signal.startHz;
     j["endHz"] = signal.endHz;
+    j["toneCount"] = signal.toneCount;
+    j["intervalSec"] = signal.intervalSec;
     return j;
 }
 

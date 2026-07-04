@@ -8,6 +8,18 @@
 
 namespace vstest {
 
+struct ParameterRampSpec {
+    std::string paramName;          // empty => first plugin parameter
+    std::string startValue = "0:n"; // text-or-normalized semantics like CLI --param
+    std::string endValue = "1:n";
+};
+
+struct ScheduledParameterChange {
+    int atSample = 0; // absolute sample offset in the render timeline (applied at block boundary)
+    std::string paramName;
+    std::string value; // text-or-normalized semantics like CLI --param
+};
+
 struct RenderRequest {
     std::string pluginPath;
     std::optional<std::string> presetPath;
@@ -19,6 +31,8 @@ struct RenderRequest {
     int channels = 2;
     juce::AudioBuffer<float> input;
     bool automateFirstParameter = false;
+    std::optional<ParameterRampSpec> parameterRamp; // takes precedence over automateFirstParameter
+    std::vector<ScheduledParameterChange> scheduledParameterChanges;
 };
 
 struct RenderResult {
@@ -29,6 +43,9 @@ struct RenderResult {
     int reportedLatencySamples = 0;
     double processingSeconds = 0.0;
     double realtimeFactor = 0.0;
+    double worstBlockRealtimeFactor = 0.0;
+    double p95BlockRealtimeFactor = 0.0;
+    bool layoutHonored = true;
 };
 
 struct ProgramInfo {
